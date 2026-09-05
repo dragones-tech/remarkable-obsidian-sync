@@ -8,8 +8,20 @@ It is a thin shell over [`rmos`](../README.md); all the sync logic lives there.
 
 ## Status
 
-Phase C: the bar widget is written and installed. The picker (`Overlay.qml`)
-is still a placeholder — that is phase D.
+Phase D: the bar widget and the picker are both written and installed.
+
+## Editing the QML
+
+`omarchy plugin rescanPlugins` does **not** rebuild a component that is
+already loaded — an edited QML file will appear to change nothing. Use:
+
+```bash
+omarchy-restart-shell
+```
+
+Do not use `omarchy refresh shell`: that resets `shell.json` to Omarchy's
+defaults, which removes this plugin from your bar along with anything else you
+have arranged there.
 
 ## How it is put together
 
@@ -81,6 +93,22 @@ connecting the way rmos does, without naming a key. Testing with an explicit
 `-i` would report success while rmos itself still failed, because rmos finds
 the key through `~/.ssh/config`. If a key is already on the tablet but ssh is
 not being told to use it, pairing adopts it and needs no password.
+
+## The picker
+
+Opened with `t` from the bar popout. Two ways to mark a notebook, because the
+tablet offers two and neither is wrong:
+
+- **Tags** — every notebook carrying a ticked tag syncs, and it keeps working
+  as you tag more on the tablet.
+- **Notebooks** — picked individually, filtered with `/`.
+
+They are unioned, so unticking a tag never un-picks a notebook you chose by
+hand. A notebook already covered by a ticked tag says so and cannot be
+unticked here; untick the tag instead. Only the difference is written on save,
+so nothing is re-selected for no reason.
+
+`Enter` saves, `Tab` moves between sections, `Esc` cancels.
 
 ## Configuration
 
