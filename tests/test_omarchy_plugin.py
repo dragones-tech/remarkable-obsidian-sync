@@ -448,3 +448,57 @@ def test_every_icon_exists_in_the_font_the_bar_uses():
     assert used, "expected the widget to use at least one icon"
     missing = sorted(cp for cp in used if cp not in covered)
     assert not missing, f"font lacks: {[hex(c) for c in missing]}"
+
+
+# --------------------------------------------------------------------------
+# Opening a note
+# --------------------------------------------------------------------------
+
+
+def open_note(*args, config, opener="true"):
+    """Run rmos-open with a no-op launcher, so no window is opened."""
+    return run("rmos-open", *args, env={"RMOS_PLUGIN_CONFIG": str(config), "RMOS_OPENER": opener})
+
+
+def test_opening_a_synced_note_hands_obsidian_a_uri(tmp_path, plugin_config):
+    """Obsidian is asked by URI so the note opens in its vault with links
+    live, rather than in whatever editor happens to own .md."""
+    note = tmp_path / "Quick sheets" / "Quick sheets.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("# note\n", encoding="utf-8")
+
+    payload = one_object(open_note("--path", str(note), config=plugin_config))
+
+    assert payload["ok"] is True
+    assert payload["path"] == str(note)
+    assert payload["uri"].startswith("obsidian://open?path=")
+    assert "Quick%20sheets" in payload["uri"], "the path must be percent-encoded"
+
+
+def test_opening_a_notebook_that_was_never_synced_says_so(tmp_path, plugin_config):
+    payload = one_object(open_note("--path", str(tmp_path / "absent.md"), config=plugin_config))
+    assert "error" in payload
+    assert "synced" in payload["error"]
+
+
+def test_open_refuses_an_unknown_option(plugin_config):
+    assert "error" in one_object(open_note("--wipe-everything", config=plugin_config))
+
+
+def test_open_with_no_path_falls_back_to_the_vault_folder(tmp_path, plugin_config, fake_rmos):
+    rmos, _ = fake_rmos
+    # `config get` is answered from a stub, so this needs no real rmos config.
+    rmos.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        f'  *obsidian.vault*) printf \'{{"value":"{tmp_path}"}}\\n\' ;;\n'
+        '  *obsidian.source*) printf \'{"value":"Sources/reMarkable"}\\n\' ;;\n'
+        '  *) printf \'{}\\n\' ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    plugin_config.write_text(json.dumps({"rmosPath": str(rmos)}), encoding="utf-8")
+
+    payload = one_object(open_note(config=plugin_config))
+
+    assert payload["path"] == f"{tmp_path}/Sources/reMarkable"

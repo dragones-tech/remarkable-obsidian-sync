@@ -183,3 +183,71 @@ def test_flags_default_to_off():
     assert parsed.json is False
     assert parsed.batch is False
     assert parsed.wait == 0
+
+
+# --------------------------------------------------------------------------
+# Where a synced note lives
+# --------------------------------------------------------------------------
+
+
+def synced_state(tmp_path, cfg, uuid=UUID, name="Quick sheets", write_note=True):
+    """A vault holding one imported notebook, and the state that tracks it."""
+    dest = cfg.vault_source / name
+    dest.mkdir(parents=True, exist_ok=True)
+    if write_note:
+        (dest / f"{name}.md").write_text(f"---\nremarkable_id: {uuid}\n---\n", encoding="utf-8")
+    cli.save_state(cfg.state, {"documents": {uuid: {
+        "fingerprint": "abc", "visible_name": name, "destination": str(dest),
+    }}})
+    return dest
+
+
+def test_status_reports_where_a_synced_note_lives(cfg, tablet, tmp_path, monkeypatch, capsys):
+    """The widget opens the note on click, so the path must arrive with the
+    report rather than costing another round trip at click time."""
+    dest = synced_state(tmp_path, cfg)
+    monkeypatch.setattr(cli, "read_selection", lambda _ssh, _cfg: [UUID])
+    monkeypatch.setattr(cli, "remote_metadata", lambda _ssh, _u: {"visibleName": "Quick sheets"})
+    monkeypatch.setattr(cli, "remote_fingerprint", lambda _ssh, _u: ("abc", []))
+
+    cli.cmd_status(cfg, args())
+
+    notebook = only_object(capsys.readouterr())["notebooks"][0]
+    assert notebook["destination"] == str(dest)
+    assert notebook["note"] == str(dest / "Quick sheets.md")
+
+
+def test_a_notebook_that_was_never_synced_has_no_note(cfg, tablet, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "read_selection", lambda _ssh, _cfg: [UUID])
+    monkeypatch.setattr(cli, "remote_metadata", lambda _ssh, _u: {"visibleName": "Quick sheets"})
+    monkeypatch.setattr(cli, "remote_fingerprint", lambda _ssh, _u: ("abc", []))
+
+    cli.cmd_status(cfg, args())
+
+    notebook = only_object(capsys.readouterr())["notebooks"][0]
+    assert notebook["note"] is None
+    assert notebook["destination"] is None
+
+
+def test_a_note_deleted_from_the_vault_is_reported_as_absent(cfg, tablet, tmp_path, monkeypatch, capsys):
+    """State can outlive the file: someone may have deleted the note."""
+    synced_state(tmp_path, cfg, write_note=False)
+    monkeypatch.setattr(cli, "read_selection", lambda _ssh, _cfg: [UUID])
+    monkeypatch.setattr(cli, "remote_metadata", lambda _ssh, _u: {"visibleName": "Quick sheets"})
+    monkeypatch.setattr(cli, "remote_fingerprint", lambda _ssh, _u: ("abc", []))
+
+    cli.cmd_status(cfg, args())
+
+    notebook = only_object(capsys.readouterr())["notebooks"][0]
+    assert notebook["note"] is None, "nothing to open, so do not offer to open it"
+    assert notebook["destination"] is not None
+
+
+def test_notebooks_no_longer_selected_still_say_where_they_are(cfg, tablet, tmp_path, monkeypatch, capsys):
+    dest = synced_state(tmp_path, cfg)
+    monkeypatch.setattr(cli, "read_selection", lambda _ssh, _cfg: [])
+
+    cli.cmd_status(cfg, args())
+
+    kept = only_object(capsys.readouterr())["no_longer_selected"][0]
+    assert kept["note"] == str(dest / "Quick sheets.md")

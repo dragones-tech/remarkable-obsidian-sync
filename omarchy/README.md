@@ -40,7 +40,7 @@ the widget can say what is wrong instead of showing nothing.
 | `rmos-apply` | Persist what the picker chose | Cheap |
 | `rmos-pair` | Install an SSH key using the tablet's password | Once |
 | `rmos-unpair` | Revoke it | Once |
-| `rmos-open` | Open the synced folder in Obsidian | Cheap |
+| `rmos-open` | Open a note (`--path`) or the synced folder in Obsidian | Cheap |
 
 ## The bar widget
 
@@ -49,8 +49,13 @@ there is something to act on: notebooks waiting to sync, or a tablet that is
 not paired yet. Left-click opens the popout, right-click syncs straight away —
 the plug in, sync, unplug loop is most of the use.
 
-In the popout: `s` sync, `t` choose what syncs, `o` open the vault, `r`
-refresh. Arrow keys move a cursor over the notebooks.
+In the popout: `Enter` or a click opens the highlighted notebook's note in
+Obsidian, `s` sync, `t` choose what syncs, `o` open the vault folder, `r`
+refresh. Arrow keys move the cursor.
+
+A notebook that has not been synced yet has nothing to open and says so rather
+than opening the wrong thing. The note's location arrives with the report, so
+clicking costs no round trip.
 
 The expensive call (`rmos-report`, an SSH round trip per selected notebook)
 runs when the tablet appears and when the popout opens — never on the poll

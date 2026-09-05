@@ -10,6 +10,7 @@ from rmos.core import (
     fingerprint_entries,
     fingerprint_tree,
     frontmatter_id,
+    note_path_for,
     notebook_from_metadata,
     parse_hash_listing,
     parse_metadata,
@@ -322,3 +323,13 @@ def test_fingerprint_skips_symlinks(tmp_path):
     before = fingerprint_tree(tmp_path)
     Path(tmp_path / "link").symlink_to(tmp_path / "real")
     assert fingerprint_tree(tmp_path) == before
+
+
+def test_the_note_is_named_after_the_folder_that_holds_it():
+    """Derived, not stored: two copies could disagree after a rename."""
+    assert note_path_for("/v/Sources/Project Alpha") == Path("/v/Sources/Project Alpha/Project Alpha.md")
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_no_destination_means_no_note(value):
+    assert note_path_for(value) is None

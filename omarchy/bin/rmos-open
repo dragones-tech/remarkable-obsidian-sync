@@ -1,18 +1,36 @@
 #!/bin/bash
-# Open the synced folder in Obsidian, or in the file manager as a fallback.
+# Open a synced note in Obsidian, or the whole synced folder with no arguments.
+#
+# Obsidian is asked by URI rather than by opening the file directly, so the
+# note lands in the vault it belongs to with its links and backlinks live,
+# rather than in whatever editor happens to own .md.
 set -uo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=/dev/null
 . "$here/_common.sh"
 
-rmos=$(resolve_rmos)
-vault=$("$rmos" config get obsidian.vault --json 2>/dev/null | jq -r '.value // empty')
-source_dir=$("$rmos" config get obsidian.source --json 2>/dev/null | jq -r '.value // empty')
-[[ -n $vault ]] || die_json "No vault configured. Run: rmos init-config --vault <path>"
-target="${vault/#\~/$HOME}/${source_dir:-Sources/reMarkable}"
+target=""
+while (( $# > 0 )); do
+  case "$1" in
+    --path) target="${2:?}"; shift 2 ;;
+    *) die_json "unknown option: $1" ;;
+  esac
+done
 
-if command -v xdg-open >/dev/null 2>&1; then
-  xdg-open "obsidian://open?path=$(jq -rn --arg p "$target" '$p|@uri')" >/dev/null 2>&1 \
-    || xdg-open "$target" >/dev/null 2>&1 &
+if [[ -n $target ]]; then
+  [[ -e $target ]] || die_json "That notebook has not been synced yet."
+else
+  rmos=$(resolve_rmos)
+  vault=$("$rmos" config get obsidian.vault --json 2>/dev/null | jq -r '.value // empty')
+  source_dir=$("$rmos" config get obsidian.source --json 2>/dev/null | jq -r '.value // empty')
+  [[ -n $vault ]] || die_json "No vault configured. Run: rmos init-config --vault <path>"
+  target="${vault/#\~/$HOME}/${source_dir:-Sources/reMarkable}"
 fi
-emit --arg path "$target" '{ok: true, path: $path}'
+
+uri="obsidian://open?path=$(jq -rn --arg p "$target" '$p|@uri')"
+# Overridable so tests can exercise this without opening a window.
+opener="${RMOS_OPENER:-xdg-open}"
+if command -v "$opener" >/dev/null 2>&1; then
+  setsid "$opener" "$uri" >/dev/null 2>&1 &
+fi
+emit --arg path "$target" --arg uri "$uri" '{ok: true, path: $path, uri: $uri}'

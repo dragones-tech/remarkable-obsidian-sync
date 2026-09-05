@@ -66,7 +66,7 @@ rmos sync            # import into the vault
 | --- | --- |
 | `rmos doctor` | Verifies local `ssh`/`tar`, tablet reachability, the xochitl directory, a remote checksum tool, the selection file, and that the vault is writable. Exits non-zero if a required check fails. |
 | `rmos list` | Prints the UUID and visible name of each selected notebook. |
-| `rmos status` | Shows per-notebook `new` / `changed` / `unchanged`, plus notebooks previously synced but no longer selected. |
+| `rmos status` | Shows per-notebook `new` / `changed` / `unchanged`, plus notebooks previously synced but no longer selected. With `--json`, also where each note lives in the vault. |
 | `rmos sync` | Imports changed notebooks. `--dry-run` reports without transferring or writing; `--re-render` re-runs the renderer without transferring. |
 | `rmos tags` | Lists the tags in use on the tablet, with document counts. `--all` also shows which notebook carries which. |
 | `rmos inspect` | Reports the `.rm` stroke format of synced notebooks. Reads the local vault only — no tablet needed. |

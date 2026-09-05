@@ -121,6 +121,19 @@ Panel {
     Quickshell.execDetached([root.binDir + "/rmos-open"])
   }
 
+  // A row is a notebook, and the obvious thing to do with one you have
+  // already synced is read it. Nothing has to be looked up here: the note's
+  // location came back with the report.
+  function openNote(notebook) {
+    var note = notebook ? String(notebook.note || "") : ""
+    if (note === "") {
+      root.lastResult = "Not synced yet — press s first"
+      return
+    }
+    root.close()
+    Quickshell.execDetached([root.binDir + "/rmos-open", "--path", note])
+  }
+
   // The picker is a separate surface owned by the shell, so the widget asks
   // for it the same way a keybinding would rather than reaching across.
   function openPicker() {
@@ -133,7 +146,7 @@ Panel {
 
   function activateCursor() {
     if (root.rowCount === 0) return
-    root.openPicker()
+    root.openNote(root.rows[root.selectedIndex])
   }
 
   function moveCursor(dx, dy) {
@@ -497,7 +510,7 @@ Panel {
           Text {
             width: parent.width
             textFormat: Text.PlainText
-            text: "s sync · t choose · o open · r refresh"
+            text: "enter open · s sync · t choose · o vault · r refresh"
             color: Qt.darker(root.dim, 1.2)
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -579,6 +592,7 @@ Panel {
     readonly property string status: notebook ? String(notebook.status || "") : ""
     readonly property bool waiting: status === "new" || status === "changed"
     readonly property bool broken: status === "error"
+    readonly property bool readable: notebook ? String(notebook.note || "") !== "" : false
 
     hasCursor: root.cursorActive && root.selectedIndex === rowIndex
     foreground: root.foreground
@@ -587,9 +601,9 @@ Panel {
     MouseArea {
       anchors.fill: parent
       hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
+      cursorShape: notebookRow.readable ? Qt.PointingHandCursor : Qt.ArrowCursor
       onEntered: { root.cursorActive = true; root.selectedIndex = notebookRow.rowIndex }
-      onClicked: root.openPicker()
+      onClicked: root.openNote(notebookRow.notebook)
     }
 
     RowLayout {

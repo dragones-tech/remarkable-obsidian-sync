@@ -400,6 +400,19 @@ def plan_destination(source: Path, documents: dict, uuid: str, visible_name: str
     return source / f"{base} ({uuid[:8]})"
 
 
+def note_path_for(destination: str | Path | None) -> Path | None:
+    """Where a synced notebook's Markdown note lives.
+
+    The note is named after the folder that holds it, so this is derivable
+    from the destination alone - no need to store it twice and risk the two
+    disagreeing after a rename.
+    """
+    if not destination:
+        return None
+    folder = Path(destination)
+    return folder / f"{folder.name}.md"
+
+
 def write_text_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".rmos-tmp")

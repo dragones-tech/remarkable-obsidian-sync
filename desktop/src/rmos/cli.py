@@ -27,6 +27,7 @@ from .core import (
     fingerprint_entries,
     fingerprint_tree,
     folder_path,
+    note_path_for,
     notebook_from_metadata,
     parse_hash_listing,
     parse_metadata,
@@ -557,6 +558,20 @@ def cmd_list(cfg: Config, args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def _where(entry: dict) -> dict:
+    """The vault location of a notebook we have already synced.
+
+    `note` is null until a notebook has actually been imported, which is what
+    tells a caller whether there is anything to open yet.
+    """
+    destination = entry.get("destination")
+    note = note_path_for(destination)
+    return {
+        "destination": str(destination) if destination else None,
+        "note": str(note) if note and note.exists() else None,
+    }
+
+
 def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     ssh = make_ssh(cfg, args)
     state = load_state(cfg.state)
@@ -571,14 +586,15 @@ def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
             nb = notebook_from_metadata(uuid, remote_metadata(ssh, uuid))
             fingerprint, _ = remote_fingerprint(ssh, uuid)
             status = "unchanged" if entry.get("fingerprint") == fingerprint else ("new" if not entry else "changed")
-            notebooks.append({"uuid": uuid, "name": nb.visible_name, "status": status})
+            notebooks.append({"uuid": uuid, "name": nb.visible_name, "status": status, **_where(entry)})
         except (RmosError, ValueError) as exc:
             notebooks.append({"uuid": uuid, "name": entry.get("visible_name", uuid),
-                              "status": "error", "error": str(exc)})
+                              "status": "error", "error": str(exc), **_where(entry)})
             failed += 1
 
     untracked = [
-        {"uuid": u, "name": docs[u].get("visible_name", u)} for u in docs if u not in uuids
+        {"uuid": u, "name": docs[u].get("visible_name", u), **_where(docs[u])}
+        for u in docs if u not in uuids
     ]
     payload = {
         "remote": cfg.remote,
