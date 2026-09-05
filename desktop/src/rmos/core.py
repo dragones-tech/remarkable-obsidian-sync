@@ -153,6 +153,144 @@ def notebook_from_metadata(uuid: str, metadata: dict) -> Notebook:
     return Notebook(uuid=validate_uuid(uuid), visible_name=visible.strip(), last_modified=modified)
 
 
+@dataclass(frozen=True)
+class IndexEntry:
+    """One entry of the tablet's document index, as far as selection cares."""
+
+    uuid: str
+    visible_name: str
+    doc_type: str
+    parent: str
+    deleted: bool
+    tags: tuple[str, ...]
+    page_tags: tuple[str, ...] = ()
+    # True when `.content` carried a non-empty tags list we could not decode.
+    # A selection mechanism that silently matches nothing is the worst kind of
+    # bug, so this is surfaced rather than swallowed.
+    tags_unreadable: bool = False
+
+    @property
+    def is_document(self) -> bool:
+        return self.doc_type == "DocumentType" and not self.deleted and self.parent != "trash"
+
+    @property
+    def all_tags(self) -> tuple[str, ...]:
+        """Document and page tags together, first spelling of each kept."""
+        seen: dict[str, str] = {}
+        for name in (*self.tags, *self.page_tags):
+            seen.setdefault(name.casefold(), name)
+        return tuple(seen.values())
+
+
+def _tag_names(raw: object) -> list[str]:
+    """Decode one tag list.
+
+    Both encodings are accepted: a plain list of strings, and a list of
+    objects carrying a `name`. Firmware 20260612085811 writes the object form
+    (`{"name": "sync", "pageId": ..., "timestamp": ...}`); getting this wrong
+    would silently select nothing.
+    """
+    if not isinstance(raw, list):
+        return []
+    names: list[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            name = item
+        elif isinstance(item, dict):
+            name = item.get("name")
+        else:
+            continue
+        if isinstance(name, str) and name.strip():
+            names.append(name.strip())
+    return names
+
+
+def document_tags(content: dict) -> list[str]:
+    """Tags applied to the document as a whole."""
+    return _tag_names(content.get("tags"))
+
+
+def page_tags(content: dict) -> list[str]:
+    """Tags applied to individual pages, deduplicated across pages.
+
+    Tagging a page from inside a notebook and tagging the notebook itself are
+    two different actions in the reMarkable UI, writing to `pageTags` and
+    `tags` respectively. Either is a reasonable way for someone to say "sync
+    this", so both are honoured.
+    """
+    seen: dict[str, str] = {}
+    for name in _tag_names(content.get("pageTags")):
+        seen.setdefault(name.casefold(), name)
+    return list(seen.values())
+
+
+def build_index(metadata: dict[str, dict], content: dict[str, dict]) -> dict[str, IndexEntry]:
+    """Fold raw `.metadata`/`.content` pairs into one index keyed by UUID."""
+    index: dict[str, IndexEntry] = {}
+    for uuid, meta in metadata.items():
+        doc_content = content.get(uuid, {})
+        raw_tags = [
+            item
+            for key in ("tags", "pageTags")
+            if isinstance(doc_content.get(key), list)
+            for item in doc_content[key]
+        ]
+        names = document_tags(doc_content)
+        pages = page_tags(doc_content)
+        visible = meta.get("visibleName")
+        if not isinstance(visible, str) or not visible.strip():
+            visible = uuid
+        index[uuid] = IndexEntry(
+            uuid=uuid,
+            visible_name=visible.strip(),
+            doc_type=meta.get("type") if isinstance(meta.get("type"), str) else "",
+            parent=meta.get("parent") if isinstance(meta.get("parent"), str) else "",
+            deleted=bool(meta.get("deleted")),
+            tags=tuple(names),
+            page_tags=tuple(pages),
+            tags_unreadable=bool(raw_tags) and not (names or pages),
+        )
+    return index
+
+
+def select_by_tag(index: dict[str, IndexEntry], tag: str) -> list[str]:
+    """UUIDs of live documents carrying `tag`, compared case-insensitively.
+
+    Tagging is the on-device selection action: it marks a notebook without
+    moving it out of the folder the user filed it in. A tag on the document or
+    on any one of its pages counts.
+    """
+    wanted = tag.strip().casefold()
+    if not wanted:
+        return []
+    return sorted(
+        entry.uuid
+        for entry in index.values()
+        if entry.is_document and any(t.casefold() == wanted for t in entry.all_tags)
+    )
+
+
+def unreadable_tag_documents(index: dict[str, IndexEntry]) -> list[IndexEntry]:
+    """Live documents whose tags we could not decode."""
+    return sorted(
+        (e for e in index.values() if e.is_document and e.tags_unreadable),
+        key=lambda e: e.visible_name.casefold(),
+    )
+
+
+def tag_census(index: dict[str, IndexEntry]) -> list[tuple[str, int]]:
+    """Every tag in use and how many live documents carry it."""
+    counts: dict[str, int] = {}
+    for entry in index.values():
+        if not entry.is_document:
+            continue
+        # One document tagged both "Obsidian" and "obsidian" counts once, and
+        # the spelling it was first given is the one reported.
+        for tag in entry.all_tags:
+            counts[tag] = counts.get(tag, 0) + 1
+    return sorted(counts.items(), key=lambda pair: (-pair[1], pair[0].casefold()))
+
+
 def render_markdown(notebook: Notebook, fingerprint: str, *, pdf_name: str | None = None) -> str:
     """Render the vault note.
 

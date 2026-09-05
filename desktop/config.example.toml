@@ -14,6 +14,16 @@ source = "Sources/reMarkable"
 [rmos]
 state = "~/.local/state/rmos/state.json"
 
+# How a notebook gets marked for export.
+#   "tag"  - it, or any one of its pages, carries the tag below. Tagging moves
+#            nothing, so your folder structure is untouched. Run `rmos tags`
+#            to see which tags exist on the tablet.
+#   "file" - its UUID is listed in /home/root/.local/share/rmos/selected.txt
+# Both are read, and the result is the union.
+[selection]
+sources = ["file", "tag"]
+tag = "obsidian"
+
 # Rendering is off until you have confirmed which stroke format your firmware
 # writes. Run `rmos inspect` after a sync to find out, then point `command` at
 # a tool that supports that version. Placeholders: {raw} {uuid} {name} {out}.

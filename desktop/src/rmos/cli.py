@@ -21,7 +21,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .core import (
+    IndexEntry,
     Notebook,
+    build_index,
     find_symlinks,
     fingerprint_entries,
     fingerprint_tree,
@@ -33,6 +35,9 @@ from .core import (
     prune_stale_notes,
     render_markdown,
     replace_tree,
+    select_by_tag,
+    tag_census,
+    unreadable_tag_documents,
     validate_uuid,
     write_text_atomic,
 )
@@ -72,6 +77,8 @@ class Config:
     source: str = "Sources/reMarkable"
     state: Path = field(default_factory=lambda: Path(DEFAULT_STATE_PATH).expanduser())
     render: dict = field(default_factory=dict)
+    selection_sources: tuple[str, ...] = ("file", "tag")
+    selection_tag: str = "obsidian"
 
     @property
     def remote(self) -> str:
@@ -92,6 +99,7 @@ def load_config(path: Path | None) -> Config:
     rm = raw.get("remarkable", {})
     ob = raw.get("obsidian", {})
     st = raw.get("rmos", {})
+    sel = raw.get("selection", {})
 
     vault = ob.get("vault")
     if not vault:
@@ -107,6 +115,8 @@ def load_config(path: Path | None) -> Config:
         source=ob.get("source", "Sources/reMarkable"),
         state=Path(st.get("state", DEFAULT_STATE_PATH)).expanduser(),
         render=dict(raw.get("render", {})),
+        selection_sources=tuple(sel.get("sources", ["file", "tag"])),
+        selection_tag=str(sel.get("tag", "obsidian")),
     )
 
 
@@ -133,6 +143,16 @@ source = "Sources/reMarkable"
 
 [rmos]
 state = "{state}"
+
+# How a notebook gets marked for export.
+#   "tag"  - it, or any one of its pages, carries the tag below. Tagging moves
+#            nothing, so your folder structure is untouched. Run `rmos tags`
+#            to see which tags exist on the tablet.
+#   "file" - its UUID is listed in /home/root/.local/share/rmos/selected.txt
+# Both are read, and the result is the union.
+[selection]
+sources = ["file", "tag"]
+tag = "obsidian"
 
 # Rendering is off until you have confirmed which stroke format your firmware
 # writes. Run `rmos inspect` after a sync to find out, then point `command` at
@@ -300,15 +320,14 @@ def _reject_unexpected_member(path: str, uuid: str) -> None:
         raise RmosError(f"Refusing unexpected bundle member outside {uuid}: {path!r}")
 
 
-def pull_bundle(ssh: Ssh, uuid: str, dest: Path) -> None:
-    """Stream one bundle over a single SSH connection via tar.
+def _stream_tar(ssh: Ssh, script: str, dest: Path, *, what: str) -> None:
+    """Run a remote script that writes a tar stream, extracting it into `dest`.
 
     Using tar instead of per-file scp keeps this to one connection (one
     password prompt) and avoids depending on sftp-server, which modern scp
     requires but the tablet does not necessarily provide.
     """
     dest.mkdir(parents=True, exist_ok=True)
-    script = _bundle_preamble(uuid) + 'tar -cf - "$@"\n'
 
     with tempfile.TemporaryFile(mode="w+") as errfile:
         ssh_proc = subprocess.Popen([*ssh.args(), script], stdout=subprocess.PIPE, stderr=errfile)
@@ -328,7 +347,7 @@ def pull_bundle(ssh: Ssh, uuid: str, dest: Path) -> None:
     if ssh_rc == RC_NO_XOCHITL:
         raise RmosError(f"Remote directory not found: {REMOTE_XOCHITL}")
     if ssh_rc == RC_NO_BUNDLE:
-        raise RmosError(f"No document bundle found on the tablet for {uuid}.")
+        raise RmosError(f"Nothing to transfer on the tablet for {what}.")
     if ssh_rc != 0:
         raise RmosError(f"Transfer failed (ssh exit {ssh_rc}): {ssh_err or 'no output'}")
     if tar_proc.returncode != 0:
@@ -336,7 +355,48 @@ def pull_bundle(ssh: Ssh, uuid: str, dest: Path) -> None:
 
     stray = find_symlinks(dest)
     if stray:
-        raise RmosError(f"Refusing bundle containing symlinks: {stray[0]}")
+        raise RmosError(f"Refusing {what}: it contains a symlink ({stray[0]}).")
+
+
+def pull_bundle(ssh: Ssh, uuid: str, dest: Path) -> None:
+    """Stream one notebook's document bundle into `dest`."""
+    _stream_tar(ssh, _bundle_preamble(uuid) + 'tar -cf - "$@"\n', dest, what=f"bundle {uuid}")
+
+
+# Matching the tablet's document index needs real JSON parsing, so the whole
+# index is pulled and parsed here rather than filtered with grep on the device.
+# A shell prefilter would depend on how the firmware happens to pretty-print
+# `.content`, and if that ever changed, tagged notebooks would silently stop
+# syncing - the worst possible failure for a selection mechanism.
+INDEX_SCRIPT = (
+    f"cd '{REMOTE_XOCHITL}' 2>/dev/null || exit {RC_NO_XOCHITL}\n"
+    "set --\n"
+    "for p in *.metadata *.content; do\n"
+    '  if [ -e "$p" ]; then set -- "$@" "$p"; fi\n'
+    "done\n"
+    f'if [ "$#" -eq 0 ]; then exit {RC_NO_BUNDLE}; fi\n'
+    'tar -cf - "$@"\n'
+)
+
+
+def read_index(ssh: Ssh) -> dict[str, IndexEntry]:
+    """Pull and parse the tablet's document index in one round trip."""
+    with tempfile.TemporaryDirectory(prefix="rmos-index-") as td:
+        root = Path(td)
+        _stream_tar(ssh, INDEX_SCRIPT, root, what="document index")
+        metadata: dict[str, dict] = {}
+        content: dict[str, dict] = {}
+        for path in root.iterdir():
+            target = metadata if path.suffix == ".metadata" else content if path.suffix == ".content" else None
+            if target is None:
+                continue
+            try:
+                uuid = validate_uuid(path.stem)
+                parsed = parse_metadata(path.read_text(encoding="utf-8"))
+            except (ValueError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            target[uuid] = parsed
+    return build_index(metadata, content)
 
 
 # --------------------------------------------------------------------------
@@ -362,12 +422,47 @@ def save_state(path: Path, state: dict) -> None:
     os.replace(tmp, path)
 
 
-def read_selection(ssh: Ssh) -> list[str]:
+def read_selection_file(ssh: Ssh) -> list[str]:
     script = f"if [ -f '{REMOTE_SELECTED}' ]; then cat '{REMOTE_SELECTED}'; fi"
     selection = parse_selected(ssh.output(script))
     for bad in selection.invalid:
         print(f"warning: ignoring malformed line in selected.txt: {bad!r}", file=sys.stderr)
     return selection.uuids
+
+
+KNOWN_SELECTION_SOURCES = ("file", "tag")
+
+
+def read_selection(ssh: Ssh, cfg: Config) -> list[str]:
+    """Resolve which notebooks are marked for export, across every source.
+
+    Sources are unioned, so a notebook tagged on the tablet and one listed in
+    selected.txt are both honoured, and neither mechanism can un-select what
+    the other selected.
+    """
+    unknown = [s for s in cfg.selection_sources if s not in KNOWN_SELECTION_SOURCES]
+    if unknown:
+        raise RmosError(
+            f"Unknown [selection] source(s): {', '.join(unknown)} "
+            f"(expected any of {', '.join(KNOWN_SELECTION_SOURCES)})"
+        )
+    if not cfg.selection_sources:
+        raise RmosError("[selection] sources is empty; nothing can ever be selected.")
+
+    found: list[str] = []
+    seen: set[str] = set()
+    for source in cfg.selection_sources:
+        if source == "file":
+            uuids = read_selection_file(ssh)
+        else:
+            index = read_index(ssh)
+            _warn_unreadable_tags(index)
+            uuids = select_by_tag(index, cfg.selection_tag)
+        for uuid in uuids:
+            if uuid not in seen:
+                seen.add(uuid)
+                found.append(uuid)
+    return found
 
 
 # --------------------------------------------------------------------------
@@ -482,7 +577,7 @@ def cmd_doctor(cfg: Config, args: argparse.Namespace) -> int:
 
 def cmd_list(cfg: Config, args: argparse.Namespace) -> int:
     ssh = make_ssh(cfg, args)
-    uuids = read_selection(ssh)
+    uuids = read_selection(ssh, cfg)
     if not uuids:
         print("No notebooks selected.")
         return 0
@@ -501,7 +596,7 @@ def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     ssh = make_ssh(cfg, args)
     state = load_state(cfg.state)
     docs = state["documents"]
-    uuids = read_selection(ssh)
+    uuids = read_selection(ssh, cfg)
 
     print(f"remote:      {cfg.remote}")
     print(f"vault:       {cfg.vault_source}")
@@ -662,7 +757,7 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
     renderer = build_configured_renderer(cfg)
     state = load_state(cfg.state)
     docs = state["documents"]
-    uuids = read_selection(ssh)
+    uuids = read_selection(ssh, cfg)
 
     if not uuids:
         print("No notebooks selected.")
@@ -774,6 +869,48 @@ def cmd_inspect(cfg: Config, args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def _warn_unreadable_tags(index: dict[str, IndexEntry]) -> None:
+    unreadable = unreadable_tag_documents(index)
+    if not unreadable:
+        return
+    print(
+        f"warning: {len(unreadable)} document(s) carry tags in an encoding rmos does not "
+        "understand, so they cannot be selected by tag:",
+        file=sys.stderr,
+    )
+    for entry in unreadable[:5]:
+        print(f"  {entry.visible_name}  ({entry.uuid})", file=sys.stderr)
+    print("Please report the 'tags' field of one of those .content files.", file=sys.stderr)
+
+
+def cmd_tags(cfg: Config, args: argparse.Namespace) -> int:
+    """List the document tags in use on the tablet."""
+    ssh = make_ssh(cfg, args)
+    index = read_index(ssh)
+    census = tag_census(index)
+    _warn_unreadable_tags(index)
+
+    if not census:
+        print("No documents on the tablet carry a tag yet.")
+        print(f"Tag one with \"{cfg.selection_tag}\" to mark it for export.")
+        return 0
+
+    width = max(len(tag) for tag, _ in census)
+    for tag, count in census:
+        marker = "  <- selected for export" if tag.casefold() == cfg.selection_tag.casefold() else ""
+        print(f"{tag:<{width}}  {count:>3} document(s){marker}")
+
+    if not any(tag.casefold() == cfg.selection_tag.casefold() for tag, _ in census):
+        print()
+        print(f"Nothing carries \"{cfg.selection_tag}\" yet (the tag [selection] is configured to look for).")
+    if args.all:
+        print()
+        for entry in sorted(index.values(), key=lambda e: e.visible_name.casefold()):
+            if entry.is_document and entry.all_tags:
+                print(f"  {entry.visible_name}  [{', '.join(sorted(entry.all_tags))}]")
+    return 0
+
+
 def cmd_select(cfg: Config, args: argparse.Namespace) -> int:
     ssh = make_ssh(cfg, args)
     uuid = validate_uuid(args.uuid)
@@ -862,6 +999,9 @@ def build_parser() -> argparse.ArgumentParser:
     inspect = sub.add_parser("inspect", help="report the stroke format of synced notebooks")
     inspect.add_argument("uuid", nargs="?", help="one notebook; defaults to all synced ones")
 
+    tags = sub.add_parser("tags", help="list the document tags in use on the tablet")
+    tags.add_argument("--all", action="store_true", help="also list which notebook carries which tag")
+
     select = sub.add_parser("select", help="mark a notebook for export, from the desktop")
     select.add_argument("uuid")
 
@@ -880,6 +1020,7 @@ COMMANDS = {
     "status": cmd_status,
     "sync": cmd_sync,
     "inspect": cmd_inspect,
+    "tags": cmd_tags,
     "select": cmd_select,
     "unselect": cmd_unselect,
 }

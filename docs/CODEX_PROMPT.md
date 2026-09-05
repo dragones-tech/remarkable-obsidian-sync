@@ -35,19 +35,15 @@ applets - so the remote shell snippets have more room than assumed.
 Implemented in `desktop/usb/`. The rendered rule and unit are checked by
 `udevadm verify` and `systemd-analyze verify` in the test suite.
 
-## Phase 3 - on-device UI action
+## Phase 3 - on-device UI action (done: the stock tag UI)
 
-Try the approaches in increasing order of risk, and stop at the first that
-works:
+Selection is a tag applied in the reMarkable's own UI - on the document or on
+any page. No patch, nothing to uninstall, nothing for a firmware update to
+break. `rmos tags` lists what is tagged.
 
-1. **A dedicated `Obsidian` collection in xochitl**, read by the desktop client
-   as the selection mechanism. No patching, nothing to uninstall, survives
-   firmware updates. Try this first.
-2. A lightweight companion menu reachable through an existing gesture.
-3. A firmware-compatible xochitl hook that invokes `rmos-select <uuid>`.
-
-Whatever is chosen must stay a thin adapter over the `selected.txt` contract,
-so the desktop client never needs to know which mechanism produced it.
+Nothing further is required here. If another mechanism is ever wanted, add it
+as a `[selection] sources` entry; sync consumes a set of UUIDs and does not
+care where they came from.
 
 Before any device experiment: record the firmware version, verify SSH access,
 back up `/home/root/.local/share/remarkable/xochitl/`, and confirm the

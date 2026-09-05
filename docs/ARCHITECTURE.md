@@ -12,7 +12,7 @@ The reMarkable 1 has limited CPU/RAM and its primary value is low-latency handwr
   VERSION
 ```
 
-`selected.txt` is the contract between device UI integration and desktop client.
+`selected.txt` is one of two ways a notebook gets marked; see **Selection sources** below.
 
 Example:
 
@@ -22,6 +22,33 @@ Example:
 ```
 
 This deliberately avoids changing files under the notebook store.
+
+## Selection sources
+
+A notebook is marked for export by either mechanism, and the desktop unions
+them:
+
+1. **A tag applied on the tablet** - the primary action. The reMarkable UI can
+   tag a document (`.content` -> `tags`) and tag an individual page
+   (`.content` -> `pageTags`); both count, since either is a reasonable way for
+   someone to say "sync this". Firmware `20260612085811` encodes a tag as
+   `{"name": "sync", "pageId": ..., "timestamp": ...}`, and the plain-string
+   form is accepted too.
+2. **`selected.txt`** under our own state directory, written by `rmos-select`
+   on the tablet or `rmos select` from the desktop.
+
+Tagging is what phase 3 of `SPEC.md` was reaching for, reached without any of
+its risk: no xochitl patch, no binary replaced, nothing to uninstall, and no
+firmware update to survive - the mechanism *is* the stock UI. It also does not
+disturb the user's filing, which a dedicated `Obsidian` folder would have.
+
+Reading tags means reading the whole document index (`*.metadata` and
+`*.content`, a few MB) and parsing it as JSON. Filtering on the device with
+grep or awk would be far cheaper, but it would depend on how the firmware
+happens to pretty-print `.content`; if that ever changed, tagged notebooks
+would silently stop syncing. For a selection mechanism, silence is the worst
+possible failure, so the cost is paid. A tag list we cannot decode is reported
+rather than swallowed.
 
 ## reMarkable notebook store
 
@@ -157,15 +184,19 @@ Each UUID records the content fingerprint, visible name, destination folder, las
 
 ## UI integration strategy
 
-Do not begin by patching xochitl. First prove the end-to-end sync using `remarkable/rmos-select` from SSH.
+Settled: **the stock tag UI is the integration.** No xochitl patch was needed,
+so the risk this section was written to manage does not arise.
 
-Once proven, evaluate UI approaches in this order:
+The options originally listed, and why they were not taken:
 
-1. Firmware-compatible xochitl hook/patch that invokes `rmos-select <uuid>`.
-2. Lightweight companion menu/action accessible through an existing gesture/button mechanism.
-3. As a fallback, a dedicated `Obsidian` collection/folder interpreted by the desktop client as the selection mechanism.
+- *Patching xochitl* - highest risk, needs re-doing after firmware updates.
+- *A companion menu on a gesture* - still a modification to maintain.
+- *A dedicated `Obsidian` folder* - no modification, but it forces the user to
+  move notebooks out of their own filing to sync them. Rejected for that
+  reason; tagging marks a notebook in place.
 
-The integration must remain a thin adapter around the stable `selected.txt` contract.
+The desktop still treats selection as a set of UUIDs from interchangeable
+sources, so another mechanism can be added later without touching sync.
 
 ## Update resilience
 

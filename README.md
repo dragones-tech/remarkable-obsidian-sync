@@ -9,7 +9,7 @@ Keep the tablet simple. Notes remain native reMarkable documents. A small on-dev
 ## MVP flow
 
 1. Create/write a notebook normally on the reMarkable.
-2. Mark that notebook with the on-device action **Copy to Obsidian**.
+2. Tag it (or any of its pages) `obsidian` on the tablet.
 3. Connect the reMarkable 1 over USB.
 4. Run `rmos sync` on the computer (later: auto-run on USB attach).
 5. The client pulls the selected notebook data and creates/updates a Markdown note in the configured Obsidian vault.
@@ -67,12 +67,34 @@ rmos sync            # import into the vault
 | `rmos list` | Prints the UUID and visible name of each selected notebook. |
 | `rmos status` | Shows per-notebook `new` / `changed` / `unchanged`, plus notebooks previously synced but no longer selected. |
 | `rmos sync` | Imports changed notebooks. `--dry-run` reports without transferring or writing; `--re-render` re-runs the renderer without transferring. |
+| `rmos tags` | Lists the tags in use on the tablet, with document counts. `--all` also shows which notebook carries which. |
 | `rmos inspect` | Reports the `.rm` stroke format of synced notebooks. Reads the local vault only — no tablet needed. |
 | `rmos select <uuid>` | Marks a notebook from the desktop, without opening a shell on the tablet. |
 | `rmos unselect <uuid>` | Unmarks it. Existing vault notes are always kept. |
 | `rmos init-config` | Writes a starter `~/.config/rmos/config.toml`. |
 
 Global flags: `--config`, `-v/--verbose`, `--batch` (never prompt — required for unattended runs) and `--wait SECONDS` (wait for the tablet to answer before giving up).
+
+## Marking a notebook for export
+
+Tag it on the tablet. A tag on the **document** or on **any one of its pages** counts, so whichever way the reMarkable UI lets you tag, it works. Nothing is moved: the notebook stays in whatever folder you filed it in.
+
+```bash
+rmos tags          # which tags exist on the tablet, and how many notebooks carry each
+rmos tags --all    # ...and which notebook carries which
+```
+
+The tag rmos looks for is configurable, and `selected.txt` still works as a second source:
+
+```toml
+[selection]
+sources = ["file", "tag"]   # both are read; the result is the union
+tag = "obsidian"
+```
+
+Matching ignores case and surrounding whitespace. Deleted and trashed notebooks are skipped. Set `sources = ["tag"]` to use tagging alone — the `file` source is the only one that costs a round trip when unused, and the `tag` source reads the tablet's document index (a few MB), so dropping either saves a little work.
+
+If a notebook carries tags in an encoding rmos cannot decode, it says so loudly rather than quietly selecting nothing.
 
 ## How sync behaves
 
@@ -193,6 +215,6 @@ Verified end to end against a reMarkable running firmware `20260612085811` (Code
 
 Still staged as follow-up work:
 
-- The on-device **Copy to Obsidian** UI action (phase 3). Until then, mark notebooks with `rmos select <uuid>` from the desktop or `rmos-select` on the tablet.
+Marking a notebook is done with the tablet's own tag UI — no xochitl patch, nothing to uninstall, and nothing that a firmware update can break. Verified against a real device: a page tagged `sync` selected its notebook, synced, and a second sync reported it unchanged.
 
 See `SPEC.md` and `docs/ARCHITECTURE.md`.
