@@ -113,7 +113,14 @@ hand. A notebook already covered by a ticked tag says so and cannot be
 unticked here; untick the tag instead. Only the difference is written on save,
 so nothing is re-selected for no reason.
 
-`Enter` saves, `Tab` moves between sections, `Esc` cancels.
+A notebook that has already been synced carries an open icon on its right,
+which opens the note in Obsidian. It sits above the row's own click target, so
+opening a note never doubles as ticking it.
+
+`Enter` saves and closes. `Ctrl+Enter` saves and then syncs, staying open so
+you can watch the result and open what just arrived — the catalogue is re-read
+afterwards, so notebooks that were just imported gain their open icon. `/`
+filters, `Esc` cancels.
 
 ## Configuration
 

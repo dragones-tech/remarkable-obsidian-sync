@@ -1000,6 +1000,7 @@ def cmd_index(cfg: Config, args: argparse.Namespace) -> int:
             "name": entry.visible_name,
             "folder": folder_path(index, entry.uuid),
             "tags": list(entry.all_tags),
+            **_where(tracked.get(entry.uuid, {})),
             "selected": entry.uuid in by_file or entry.uuid in by_tag,
             "selected_by": sorted(
                 s for s, members in (("file", by_file), ("tag", by_tag)) if entry.uuid in members

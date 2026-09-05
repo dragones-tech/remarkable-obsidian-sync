@@ -86,6 +86,8 @@ def test_index_carries_what_a_picker_row_needs(cfg, tablet, capsys):
         "selected": True,
         "selected_by": ["tag"],
         "synced": False,
+        "destination": None,
+        "note": None,
     }
 
 
@@ -251,3 +253,20 @@ def test_notebooks_no_longer_selected_still_say_where_they_are(cfg, tablet, tmp_
 
     kept = only_object(capsys.readouterr())["no_longer_selected"][0]
     assert kept["note"] == str(dest / "Quick sheets.md")
+
+
+def test_the_index_says_where_a_synced_note_is_so_the_picker_can_open_it(cfg, tablet, tmp_path, capsys):
+    dest = synced_state(tmp_path, cfg)
+
+    cli.cmd_index(cfg, args())
+
+    row = only_object(capsys.readouterr())["documents"][0]
+    assert row["synced"] is True
+    assert row["note"] == str(dest / "Quick sheets.md")
+
+
+def test_an_unsynced_notebook_offers_nothing_to_open(cfg, tablet, capsys):
+    cli.cmd_index(cfg, args())
+    row = only_object(capsys.readouterr())["documents"][0]
+    assert row["synced"] is False
+    assert row["note"] is None

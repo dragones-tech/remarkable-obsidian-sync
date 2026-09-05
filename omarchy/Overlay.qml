@@ -36,6 +36,10 @@ Item {
   property bool pairing: false
   property bool loading: false
   property bool applying: false
+  property bool syncing: false
+  // Set when Ctrl+Enter asked for a sync: the save has to land first, so the
+  // sync waits for it rather than racing it.
+  property bool syncAfterSave: false
   property string statusText: ""
   property bool statusIsError: false
 
@@ -191,6 +195,29 @@ Item {
     root.chosenDocs = next
   }
 
+  function saveAndSync() {
+    if (root.applying || root.syncing) return
+    root.syncAfterSave = true
+    if (root.dirty) root.apply()
+    else root.runSync()
+  }
+
+  function runSync() {
+    if (root.syncing) return
+    root.syncing = true
+    root.setStatus("Syncing\u2026", false)
+    syncProcess.command = [root.binDir + "/rmos-run"]
+    syncProcess.running = true
+  }
+
+  // A notebook is worth reading once it has been carried across. Nothing is
+  // looked up here: the note's location came back with the catalogue.
+  function openNote(document) {
+    var note = document ? String(document.note || "") : ""
+    if (note === "") { root.setStatus("Not synced yet", true); return }
+    Quickshell.execDetached([root.binDir + "/rmos-open", "--path", note])
+  }
+
   // Only the difference is written, so a notebook that was already picked is
   // not re-selected and the tablet is not touched for no reason.
   function apply() {
@@ -285,12 +312,38 @@ Item {
       var data = {}
       if (exitCode === 0) { try { data = JSON.parse(applyOut.text) } catch (e) { data = {} } }
       if (data.error || data.ok === false) {
+        root.syncAfterSave = false
         root.setStatus(String(data.error || "Some changes could not be saved"), true)
+        return
+      }
+      if (root.syncAfterSave) {
+        root.syncAfterSave = false
+        root.runSync()
         return
       }
       Quickshell.execDetached(["notify-send", "-a", "reMarkable", "reMarkable",
                                root.chosenCount + " notebook(s) will sync"])
       root.dismiss()
+    }
+  }
+
+  Process {
+    id: syncProcess
+    stdout: StdioCollector { id: syncOut; waitForEnd: true }
+    onExited: function(exitCode) {
+      root.syncing = false
+      var data = {}
+      if (exitCode === 0) { try { data = JSON.parse(syncOut.text) } catch (e) { data = {} } }
+      if (data.error) { root.setStatus(String(data.error), true); return }
+      var updated = Number(data.updated || 0)
+      var failed = Number(data.failed || 0)
+      root.setStatus(
+        failed > 0 ? (updated + " synced, " + failed + " failed")
+                   : (updated === 0 ? "Nothing to sync" : updated + " synced"),
+        failed > 0)
+      // Re-read so the notebooks just imported gain an open action, which is
+      // the obvious next thing to want.
+      root.loadCatalogue()
     }
   }
 
@@ -330,6 +383,7 @@ Item {
         Keys.onPressed: function(event) {
           if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
             if (root.view === "pair") root.pair()
+            else if (event.modifiers & Qt.ControlModifier) root.saveAndSync()
             else root.apply()
             event.accepted = true
           } else if (event.key === Qt.Key_Tab && root.view === "picker") {
@@ -528,7 +582,7 @@ Item {
             textFormat: Text.PlainText
             text: root.view === "pair"
               ? "Enter pair · Esc cancel"
-              : "Enter save · Tab section · / filter · Esc cancel"
+              : "Enter save · Ctrl+Enter sync · / filter · Esc cancel"
             color: Qt.darker(root.dim, 1.2)
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -614,6 +668,7 @@ Item {
     // Ticked by hand, or already covered by a tag that is ticked. The second
     // kind is shown but cannot be unticked here: untick the tag instead.
     readonly property bool pickedByHand: root.chosenDocs[docRow.uuid] === true
+    readonly property bool readable: document ? String(document.note || "") !== "" : false
     readonly property bool coveredByTag: {
       for (var i = 0; i < docRow.tags.length; i++) {
         if (root.chosenTags[String(docRow.tags[i]).toLowerCase()] === true) return true
@@ -692,6 +747,37 @@ Item {
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         Layout.alignment: Qt.AlignVCenter
+      }
+
+      // Sits above the row's own MouseArea, so opening a note never doubles
+      // as ticking it.
+      Rectangle {
+        id: openButton
+        visible: docRow.readable
+        Layout.alignment: Qt.AlignVCenter
+        implicitWidth: Style.space(26)
+        implicitHeight: Style.space(22)
+        radius: root.cornerRadius
+        color: openMouse.containsMouse
+          ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.14)
+          : "transparent"
+
+        Text {
+          anchors.centerIn: parent
+          textFormat: Text.PlainText
+          text: "\uf08e"
+          color: openMouse.containsMouse ? root.accent : root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        MouseArea {
+          id: openMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.openNote(docRow.document)
+        }
       }
     }
   }
