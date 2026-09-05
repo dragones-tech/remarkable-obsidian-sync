@@ -182,6 +182,23 @@ def test_a_missing_rmos_is_explained_not_silent(plugin_config, tmp_path):
     assert "rmosPath" in payload["error"]
 
 
+def test_the_helper_finds_a_checkout_virtualenv(plugin_config, tmp_path):
+    """The comment promised this fallback long before the code did."""
+    plugin_config.write_text(json.dumps({"vendor": "dead", "product": "beef"}), encoding="utf-8")
+    venv_rmos = BIN.resolve().parents[1] / ".venv" / "bin" / "rmos"
+    if not venv_rmos.exists():
+        pytest.skip("no virtualenv in this checkout")
+
+    payload = one_object(run("rmos-report", env={
+        "RMOS_PLUGIN_CONFIG": str(plugin_config),
+        "PATH": "/usr/bin:/bin",
+    }))
+
+    assert "is not on PATH" not in str(payload.get("error", "")), (
+        "should have fallen back to the checkout's virtualenv"
+    )
+
+
 def test_an_rmos_failure_becomes_an_error_field(plugin_config, tmp_path):
     failing = tmp_path / "rmos"
     failing.write_text("#!/bin/sh\necho 'tablet not reachable' >&2\nexit 1\n", encoding="utf-8")

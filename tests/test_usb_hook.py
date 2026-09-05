@@ -120,6 +120,23 @@ def test_a_notification_failure_cannot_fail_the_sync(fake_rmos):
     assert line.startswith("ExecStopPost=-")
 
 
+def test_a_checkout_virtualenv_is_found_without_being_told(tmp_path):
+    """An editable install puts rmos in .venv, not on PATH. That is the normal
+    state while developing, so it should not need --rmos."""
+    result = subprocess.run(
+        ["sh", str(INSTALL), "--dry-run", "--vendor", "04b3", "--product", "4010"],
+        text=True,
+        capture_output=True,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
+    )
+    assert result.returncode == 0, result.stderr
+    venv_rmos = INSTALL.resolve().parents[2] / ".venv" / "bin" / "rmos"
+    if venv_rmos.exists():
+        assert str(venv_rmos) in unit_of(result.stdout)
+    else:
+        pytest.skip("no virtualenv in this checkout")
+
+
 def test_a_missing_rmos_executable_is_reported(tmp_path):
     result = subprocess.run(
         ["sh", str(INSTALL), "--dry-run", "--vendor", "04b3", "--product", "4010",

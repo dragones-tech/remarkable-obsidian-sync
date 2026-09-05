@@ -69,8 +69,14 @@ fi
 if [ -z "$RMOS_BIN" ]; then
   RMOS_BIN=$(command -v rmos 2>/dev/null || true)
 fi
+# Fall back to this checkout's virtualenv: an editable install puts rmos there
+# and not on PATH, which is the normal state while developing.
+if [ -z "$RMOS_BIN" ] && [ -x "$REPO/.venv/bin/rmos" ]; then
+  RMOS_BIN="$REPO/.venv/bin/rmos"
+fi
 if [ -z "$RMOS_BIN" ]; then
-  echo "Could not find 'rmos' on PATH. Pass --rmos /path/to/rmos." >&2
+  echo "Could not find 'rmos' on PATH, and no virtualenv at $REPO/.venv." >&2
+  echo "Pass --rmos /path/to/rmos." >&2
   exit 1
 fi
 case "$RMOS_BIN" in

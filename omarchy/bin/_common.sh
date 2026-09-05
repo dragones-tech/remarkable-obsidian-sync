@@ -39,6 +39,16 @@ resolve_rmos() {
     printf '%s' "$found"
     return 0
   fi
+  # A checkout's virtualenv, reached through the plugin directory. During
+  # development that directory is a symlink into the repository, so this is
+  # resolved physically rather than logically.
+  local plugin_root repo_venv
+  plugin_root=$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+  repo_venv="$(dirname -- "$plugin_root")/.venv/bin/rmos"
+  if [[ -x $repo_venv ]]; then
+    printf '%s' "$repo_venv"
+    return 0
+  fi
   die_json "rmos is not on PATH. Set \"rmosPath\" in $CONFIG."
 }
 
