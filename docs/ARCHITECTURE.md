@@ -97,7 +97,7 @@ resolve destination by UUID
 atomic raw swap
    |
    v
-render (phase 2)
+render (pluggable; no-op by default)
    |
    v
 write deterministic Markdown, prune our own stale note
@@ -116,6 +116,35 @@ The vault destination is derived from the visible name, but **identity is always
 
 Nothing in the client deletes user content from the vault. Unselecting a notebook, or deleting it on the tablet, leaves the exported note in place.
 
+## Rendering
+
+rmos ships no `.rm` parser. The stroke format is version-sensitive, and a parser
+built for the wrong version fails quietly rather than loudly, so committing to
+one on the user's behalf would be guessing with their notes.
+
+Instead the seam is explicit:
+
+- `Renderer` is a protocol with two members: `render(...)`, which writes one
+  attachment and returns it, and `signature`, which changes whenever
+  configuration affecting the output changes.
+- `NullRenderer` is the default and produces nothing.
+- `CommandRenderer` delegates to an external tool the user configures. It is
+  invoked without a shell, with only four documented placeholders substituted,
+  and must write the exact path it is given.
+
+`signature` is recorded in state alongside the content fingerprint. That
+separates two reasons to redo work: stale content needs a transfer, stale
+rendering does not. Enabling or changing a renderer therefore re-renders from
+the bundle already in the vault rather than pulling an identical copy off the
+tablet.
+
+A render failure is recorded as `failed:<signature>` so a broken command is not
+retried on every sync. Changing the configuration, or `--re-render`, retries.
+
+`rmos inspect` reads the `.rm` header of each synced page and reports the format
+version, which is the evidence needed to pick a parser. It reports an
+unrecognised header as unknown rather than guessing.
+
 ## Desktop state
 
 Default:
@@ -124,7 +153,7 @@ Default:
 ~/.local/state/rmos/state.json
 ```
 
-Each UUID records fingerprint, visible name, destination folder, and last successful sync time. It is written atomically after each notebook, so an interrupted run never loses track of work already committed to the vault.
+Each UUID records the content fingerprint, visible name, destination folder, last successful sync time, the renderer signature, and the attachment filename (if any). It is written atomically after each notebook, so an interrupted run never loses track of work already committed to the vault.
 
 ## UI integration strategy
 

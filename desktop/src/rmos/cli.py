@@ -34,6 +34,7 @@ from .core import (
     validate_uuid,
     write_text_atomic,
 )
+from .render import BundleReport, CommandRenderer, Renderer, RenderError, build_renderer, inspect_bundle
 
 REMOTE_XOCHITL = "/home/root/.local/share/remarkable/xochitl"
 REMOTE_STATE_DIR = "/home/root/.local/share/rmos"
@@ -68,6 +69,7 @@ class Config:
     vault: Path = Path()
     source: str = "Sources/reMarkable"
     state: Path = field(default_factory=lambda: Path(DEFAULT_STATE_PATH).expanduser())
+    render: dict = field(default_factory=dict)
 
     @property
     def remote(self) -> str:
@@ -102,7 +104,15 @@ def load_config(path: Path | None) -> Config:
         vault=Path(vault).expanduser(),
         source=ob.get("source", "Sources/reMarkable"),
         state=Path(st.get("state", DEFAULT_STATE_PATH)).expanduser(),
+        render=dict(raw.get("render", {})),
     )
+
+
+def build_configured_renderer(cfg: Config) -> Renderer:
+    try:
+        return build_renderer(cfg.render)
+    except ValueError as exc:
+        raise RmosError(str(exc)) from exc
 
 
 CONFIG_TEMPLATE = """\
@@ -121,6 +131,16 @@ source = "Sources/reMarkable"
 
 [rmos]
 state = "{state}"
+
+# Rendering is off until you have confirmed which stroke format your firmware
+# writes. Run `rmos inspect` after a sync to find out, then point `command` at
+# a tool that supports that version. Placeholders: {{raw}} {{uuid}} {{name}} {{out}}.
+[render]
+backend = "none"
+# backend = "command"
+# command = ["my-renderer", "--input", "{{raw}}", "--output", "{{out}}"]
+# extension = "pdf"
+# timeout = 300
 """
 
 
@@ -375,6 +395,17 @@ def cmd_doctor(cfg: Config, args: argparse.Namespace) -> int:
             )
         )
 
+    try:
+        renderer = build_configured_renderer(cfg)
+        detail = renderer.name
+        if isinstance(renderer, CommandRenderer):
+            executable = renderer.command[0]
+            found = shutil.which(executable)
+            checks.append(Check("render command", bool(found), found or f"{executable} not found on PATH"))
+        checks.append(Check("render backend", True, detail, fatal=False))
+    except RmosError as exc:
+        checks.append(Check("render backend", False, str(exc)))
+
     vault_ok = cfg.vault.is_dir()
     checks.append(Check("obsidian vault", vault_ok, str(cfg.vault) if vault_ok else f"{cfg.vault} is not a directory"))
     if vault_ok:
@@ -448,19 +479,82 @@ def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
-def _sync_one(ssh: Ssh, cfg: Config, uuid: str, docs: dict, *, dry_run: bool) -> bool:
+def _render_attachment(
+    renderer: Renderer,
+    dest: Path,
+    nb: Notebook,
+    previous_attachment: str | None,
+) -> tuple[str | None, str]:
+    """Render the notebook, returning (attachment filename, state marker).
+
+    A renderer failure is not fatal: the raw bundle is already imported, so we
+    warn, keep whatever attachment survives from an earlier run, and record the
+    failure so the next sync does not silently retry a broken command.
+    """
+    attachments = dest / "attachments"
+    produced: Path | None = None
+    marker = renderer.signature
+
+    try:
+        produced = renderer.render(
+            raw=dest / "raw",
+            uuid=nb.uuid,
+            visible_name=nb.visible_name,
+            out_dir=attachments,
+        )
+    except RenderError as exc:
+        print(f"warning: {nb.visible_name}: {exc}", file=sys.stderr)
+        marker = f"failed:{renderer.signature}"
+
+    if produced is None:
+        # Nothing rendered this run. Keep the previous embed if its file is
+        # still there, so turning the renderer off does not orphan the PDF.
+        if previous_attachment and (attachments / previous_attachment).is_file():
+            return previous_attachment, marker
+        return None, marker
+
+    if previous_attachment and previous_attachment != produced.name:
+        stale = attachments / previous_attachment
+        if stale.is_file():
+            stale.unlink()
+            print(f"           removed stale attachment {stale.name}")
+    return produced.name, marker
+
+
+def _sync_one(
+    ssh: Ssh,
+    cfg: Config,
+    uuid: str,
+    docs: dict,
+    renderer: Renderer,
+    *,
+    dry_run: bool,
+    re_render: bool = False,
+) -> bool:
     """Sync one notebook. Returns True when the vault was modified."""
     nb: Notebook = notebook_from_metadata(uuid, remote_metadata(ssh, uuid))
     fingerprint, _ = remote_fingerprint(ssh, uuid)
     previous = docs.get(uuid, {})
 
-    if previous.get("fingerprint") == fingerprint:
+    # State written before rendering existed carries no marker; treat it as the
+    # null renderer so adding this feature does not force a full re-import.
+    render_marker = previous.get("render", "none")
+    render_current = render_marker in (renderer.signature, f"failed:{renderer.signature}")
+    content_current = previous.get("fingerprint") == fingerprint
+
+    if not re_render and content_current and render_current:
         print(f"unchanged  {nb.visible_name}")
         return False
 
     dest = plan_destination(cfg.vault_source, docs, uuid, nb.visible_name)
     previous_dest = Path(previous["destination"]) if previous.get("destination") else None
-    action = "would sync" if dry_run else "sync"
+
+    # Content is already local and only the rendering is stale: re-render from
+    # the bundle we hold instead of pulling an identical copy off the tablet.
+    render_only = content_current and ((previous_dest or dest) / "raw").is_dir()
+
+    verb = "re-render" if render_only else "sync"
+    action = f"would {verb}" if dry_run else verb
 
     if previous_dest and previous_dest != dest:
         print(f"{action}   {nb.visible_name}  (renamed: {previous_dest.name} -> {dest.name})")
@@ -477,22 +571,25 @@ def _sync_one(ssh: Ssh, cfg: Config, uuid: str, docs: dict, *, dry_run: bool) ->
         dest.parent.mkdir(parents=True, exist_ok=True)
         os.replace(previous_dest, dest)
 
-    with tempfile.TemporaryDirectory(prefix="rmos-") as td:
-        staging = Path(td) / "raw"
-        pull_bundle(ssh, uuid, staging)
+    if not render_only:
+        with tempfile.TemporaryDirectory(prefix="rmos-") as td:
+            staging = Path(td) / "raw"
+            pull_bundle(ssh, uuid, staging)
 
-        # The tablet is live: verify what arrived is what we fingerprinted.
-        local = fingerprint_tree(staging, algo=ssh.hash_algo)
-        if local != fingerprint:
-            raise RmosError(
-                f"{nb.visible_name}: bundle changed during transfer (fingerprint mismatch); vault left untouched."
-            )
+            # The tablet is live: verify what arrived is what we fingerprinted.
+            local = fingerprint_tree(staging, algo=ssh.hash_algo)
+            if local != fingerprint:
+                raise RmosError(
+                    f"{nb.visible_name}: bundle changed during transfer (fingerprint mismatch); vault left untouched."
+                )
 
-        dest.mkdir(parents=True, exist_ok=True)
-        replace_tree(staging, dest / "raw")
+            dest.mkdir(parents=True, exist_ok=True)
+            replace_tree(staging, dest / "raw")
+
+    attachment, render_marker = _render_attachment(renderer, dest, nb, previous.get("attachment"))
 
     note_name = f"{dest.name}.md"
-    write_text_atomic(dest / note_name, render_markdown(nb, fingerprint))
+    write_text_atomic(dest / note_name, render_markdown(nb, fingerprint, pdf_name=attachment))
     for removed in prune_stale_notes(dest, uuid, note_name):
         print(f"           removed stale note {removed.name}")
 
@@ -501,12 +598,15 @@ def _sync_one(ssh: Ssh, cfg: Config, uuid: str, docs: dict, *, dry_run: bool) ->
         "visible_name": nb.visible_name,
         "destination": str(dest),
         "synced_at": datetime.now(UTC).isoformat(),
+        "render": render_marker,
+        "attachment": attachment,
     }
     return True
 
 
 def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
     ssh = Ssh(cfg, verbose=args.verbose)
+    renderer = build_configured_renderer(cfg)
     state = load_state(cfg.state)
     docs = state["documents"]
     uuids = read_selection(ssh)
@@ -519,7 +619,7 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
     failed = 0
     for uuid in uuids:
         try:
-            if _sync_one(ssh, cfg, uuid, docs, dry_run=args.dry_run):
+            if _sync_one(ssh, cfg, uuid, docs, renderer, dry_run=args.dry_run, re_render=args.re_render):
                 changed += 1
                 # Persist after each notebook so an interruption cannot lose
                 # work already written to the vault.
@@ -530,6 +630,94 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
 
     summary = f"{changed} updated, {len(uuids) - changed - failed} unchanged"
     print(f"\n{summary}" + (f", {failed} failed" if failed else ""))
+    return 1 if failed else 0
+
+
+def _human_size(count: int) -> str:
+    size = float(count)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GiB"
+
+
+def _print_report(name: str, dest: Path, report: BundleReport) -> None:
+    print(f"{name}  ({report.uuid})")
+    print(f"  folder:     {dest}")
+    if report.file_type:
+        print(f"  type:       {report.file_type}")
+    if report.page_count is not None:
+        print(f"  pages:      {report.page_count}")
+    print(f"  .rm files:  {report.rm_files}")
+    if report.versions:
+        summary = ", ".join(
+            f"{version} ({count} file{'s' if count != 1 else ''})" for version, count in sorted(report.versions.items())
+        )
+        print(f"  format:     {summary}")
+    if report.unknown_headers:
+        print(f"  unknown:    {len(report.unknown_headers)} file(s) with an unrecognised header")
+        for path in report.unknown_headers[:3]:
+            print(f"                {path}")
+        if len(report.unknown_headers) > 3:
+            print(f"                ... and {len(report.unknown_headers) - 3} more")
+    print(f"  size:       {_human_size(report.total_bytes)}")
+    print()
+
+
+def cmd_inspect(cfg: Config, args: argparse.Namespace) -> int:
+    """Report the stroke format of synced bundles.
+
+    This is the evidence needed to choose a renderer: the `.rm` format is
+    version-sensitive, and a parser built for the wrong version fails quietly.
+    Reads only the local vault copy, so no tablet is required.
+    """
+    docs = load_state(cfg.state)["documents"]
+    targets = [validate_uuid(args.uuid)] if args.uuid else list(docs)
+
+    if not targets:
+        print("Nothing synced yet. Run `rmos sync` first.")
+        return 0
+
+    seen: dict[str, int] = {}
+    unrecognised = 0
+    failed = 0
+
+    for uuid in targets:
+        entry = docs.get(uuid)
+        if not entry:
+            print(f"error: {uuid} has not been synced.", file=sys.stderr)
+            failed += 1
+            continue
+        dest = Path(entry["destination"])
+        raw = dest / "raw"
+        if not raw.is_dir():
+            print(f"error: {uuid}: no raw bundle at {raw}", file=sys.stderr)
+            failed += 1
+            continue
+
+        report = inspect_bundle(raw, uuid)
+        _print_report(entry.get("visible_name", uuid), dest, report)
+        for version, count in report.versions.items():
+            seen[version] = seen.get(version, 0) + count
+        unrecognised += len(report.unknown_headers)
+
+    if seen or unrecognised:
+        print("Summary")
+        for version, count in sorted(seen.items()):
+            print(f"  {version}: {count} file(s)")
+        if unrecognised:
+            print(f"  unrecognised: {unrecognised} file(s)")
+        print()
+        if len(seen) == 1 and not unrecognised:
+            version = next(iter(seen))
+            print(f"Your firmware writes {version} stroke data.")
+            print(f"Choose a renderer that supports {version}, then set [render] in your config.")
+        elif unrecognised:
+            print("Some files did not match a known header. Capture one and compare it")
+            print("against the format documentation before choosing a parser.")
+        else:
+            print("Mixed formats present. Any renderer you choose must handle all of them.")
     return 1 if failed else 0
 
 
@@ -600,6 +788,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync = sub.add_parser("sync", help="import selected notebooks into the vault")
     sync.add_argument("--dry-run", action="store_true", help="report changes without writing")
+    sync.add_argument(
+        "--re-render",
+        action="store_true",
+        help="re-run the renderer even for unchanged notebooks (no transfer)",
+    )
+
+    inspect = sub.add_parser("inspect", help="report the stroke format of synced notebooks")
+    inspect.add_argument("uuid", nargs="?", help="one notebook; defaults to all synced ones")
 
     select = sub.add_parser("select", help="mark a notebook for export, from the desktop")
     select.add_argument("uuid")
@@ -618,6 +814,7 @@ COMMANDS = {
     "list": cmd_list,
     "status": cmd_status,
     "sync": cmd_sync,
+    "inspect": cmd_inspect,
     "select": cmd_select,
     "unselect": cmd_unselect,
 }

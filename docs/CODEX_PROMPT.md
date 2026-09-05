@@ -8,17 +8,21 @@ the device-side shell scripts. `make check` runs lint and the suite.
 What remains is staged deliberately, because each item needs evidence from a
 real device before it can be written safely.
 
-## Phase 2a - rendering
+## Phase 2a - rendering (seam done, parser outstanding)
 
-> Add a pluggable renderer behind a `Renderer` protocol, defaulting to the
-> current no-op. Do not select a `.rm` parser until it has been validated
-> against sample data from the actual firmware in use: the stroke format is
-> version-sensitive and a parser for the wrong version fails silently or
-> produces wrong output. `render_markdown` already accepts `pdf_name`, so the
-> Markdown side of the seam exists.
+The `Renderer` protocol, the `none` and `command` backends, attachment
+handling and `rmos inspect` are implemented and tested. What remains needs a
+real device:
 
-Before starting, capture from the device: firmware version, `uname -a`,
-`/etc/os-release`, and one real notebook bundle to test against.
+1. Sync one real notebook, then run `rmos inspect` to learn which stroke
+   format the firmware writes.
+2. Pick a renderer that supports exactly that version and wire it up through
+   `[render] backend = "command"`.
+3. Only if the command backend proves too limiting, add a native backend - and
+   even then, validate it against sample data from that same firmware first. A
+   parser built for the wrong version fails quietly.
+
+Also capture, for the record: firmware version, `uname -a`, `/etc/os-release`.
 
 ## Phase 2b - sync on USB attach
 

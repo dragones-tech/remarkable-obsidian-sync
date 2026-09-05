@@ -7,8 +7,10 @@ against a temporary vault on disk.
 """
 
 import argparse
+import dataclasses
 import hashlib
 import json
+import sys
 
 import pytest
 
@@ -78,10 +80,10 @@ def cfg(tmp_path):
     return cli.Config(vault=vault, source="Sources/reMarkable", state=tmp_path / "state.json")
 
 
-def run_sync(cfg, device, selected, monkeypatch, *, dry_run=False):
+def run_sync(cfg, device, selected, monkeypatch, *, dry_run=False, re_render=False):
     monkeypatch.setattr(cli, "read_selection", lambda _ssh: list(selected))
     monkeypatch.setattr(cli, "Ssh", lambda *a, **k: FakeSsh())
-    args = argparse.Namespace(dry_run=dry_run, verbose=False)
+    args = argparse.Namespace(dry_run=dry_run, re_render=re_render, verbose=False)
     return cli.cmd_sync(cfg, args)
 
 
@@ -271,6 +273,175 @@ def test_a_notebook_with_an_unusable_name_still_syncs(cfg, device, monkeypatch):
 
     assert run_sync(cfg, device, [UUID], monkeypatch) == 0
     assert note_for(cfg, UUID).exists()
+
+
+# --------------------------------------------------------------------------
+# State file handling
+# --------------------------------------------------------------------------
+
+
+# --------------------------------------------------------------------------
+# Rendering
+# --------------------------------------------------------------------------
+
+
+def renderer_cfg(cfg, script, extension="pdf"):
+    return dataclasses.replace(
+        cfg,
+        render={
+            "backend": "command",
+            "command": [sys.executable, str(script), "{out}", "{name}"],
+            "extension": extension,
+        },
+    )
+
+
+@pytest.fixture
+def good_renderer(tmp_path):
+    script = tmp_path / "renderer.py"
+    script.write_text(
+        "import sys, pathlib\n"
+        'pathlib.Path(sys.argv[1]).write_text("PDF of " + sys.argv[2])\n',
+        encoding="utf-8",
+    )
+    return script
+
+
+@pytest.fixture
+def broken_renderer(tmp_path):
+    script = tmp_path / "broken.py"
+    script.write_text("import sys\nsys.stderr.write('no parser for this format\\n')\nsys.exit(1)\n", encoding="utf-8")
+    return script
+
+
+def test_render_produces_an_attachment_and_embeds_it(cfg, device, monkeypatch, good_renderer):
+    device.add(UUID, "Project Alpha")
+    rendered = renderer_cfg(cfg, good_renderer)
+
+    assert run_sync(rendered, device, [UUID], monkeypatch) == 0
+
+    attachment = cfg.vault_source / "Project Alpha" / "attachments" / "Project Alpha.pdf"
+    assert attachment.read_text(encoding="utf-8") == "PDF of Project Alpha"
+    assert "![[attachments/Project Alpha.pdf]]" in note_for(cfg, "Project Alpha").read_text(encoding="utf-8")
+
+
+def test_render_state_is_recorded_so_it_does_not_rerun(cfg, device, monkeypatch, good_renderer):
+    device.add(UUID, "Project Alpha")
+    rendered = renderer_cfg(cfg, good_renderer)
+    run_sync(rendered, device, [UUID], monkeypatch)
+    attachment = cfg.vault_source / "Project Alpha" / "attachments" / "Project Alpha.pdf"
+    before = attachment.stat().st_mtime_ns
+
+    run_sync(rendered, device, [UUID], monkeypatch)
+
+    assert attachment.stat().st_mtime_ns == before
+    entry = json.loads(cfg.state.read_text(encoding="utf-8"))["documents"][UUID]
+    assert entry["attachment"] == "Project Alpha.pdf"
+    assert entry["render"].startswith("command:")
+
+
+def test_enabling_a_renderer_later_does_not_re_download(cfg, device, monkeypatch, good_renderer):
+    device.add(UUID, "Project Alpha")
+    run_sync(cfg, device, [UUID], monkeypatch)
+    pulls = device.pulls
+
+    assert run_sync(renderer_cfg(cfg, good_renderer), device, [UUID], monkeypatch) == 0
+
+    assert device.pulls == pulls, "content was unchanged; only the rendering was stale"
+    assert (cfg.vault_source / "Project Alpha" / "attachments" / "Project Alpha.pdf").exists()
+
+
+def test_re_render_flag_forces_a_render_without_transferring(cfg, device, monkeypatch, good_renderer):
+    device.add(UUID, "Project Alpha")
+    rendered = renderer_cfg(cfg, good_renderer)
+    run_sync(rendered, device, [UUID], monkeypatch)
+    attachment = cfg.vault_source / "Project Alpha" / "attachments" / "Project Alpha.pdf"
+    attachment.unlink()
+    pulls = device.pulls
+
+    assert run_sync(rendered, device, [UUID], monkeypatch, re_render=True) == 0
+
+    assert attachment.exists()
+    assert device.pulls == pulls
+
+
+def test_a_failing_renderer_still_imports_the_raw_bundle(cfg, device, monkeypatch, broken_renderer, capsys):
+    device.add(UUID, "Project Alpha")
+
+    assert run_sync(renderer_cfg(cfg, broken_renderer), device, [UUID], monkeypatch) == 0
+
+    assert (cfg.vault_source / "Project Alpha" / "raw" / UUID / "1.rm").exists()
+    note = note_for(cfg, "Project Alpha").read_text(encoding="utf-8")
+    assert "![[attachments/" not in note
+    assert "rendering is not enabled yet" in note
+    assert "no parser for this format" in capsys.readouterr().err
+
+
+def test_a_failing_renderer_is_not_retried_on_every_sync(cfg, device, monkeypatch, broken_renderer):
+    device.add(UUID, "Project Alpha")
+    broken = renderer_cfg(cfg, broken_renderer)
+    run_sync(broken, device, [UUID], monkeypatch)
+
+    entry = json.loads(cfg.state.read_text(encoding="utf-8"))["documents"][UUID]
+    assert entry["render"].startswith("failed:command:")
+
+    pulls = device.pulls
+    run_sync(broken, device, [UUID], monkeypatch)
+    assert device.pulls == pulls
+
+
+def test_fixing_the_renderer_config_triggers_a_retry(cfg, device, monkeypatch, broken_renderer, good_renderer):
+    device.add(UUID, "Project Alpha")
+    run_sync(renderer_cfg(cfg, broken_renderer), device, [UUID], monkeypatch)
+
+    assert run_sync(renderer_cfg(cfg, good_renderer), device, [UUID], monkeypatch) == 0
+    assert (cfg.vault_source / "Project Alpha" / "attachments" / "Project Alpha.pdf").exists()
+
+
+def test_rename_moves_the_attachment_and_removes_the_old_one(cfg, device, monkeypatch, good_renderer):
+    device.add(UUID, "Project Alpha")
+    rendered = renderer_cfg(cfg, good_renderer)
+    run_sync(rendered, device, [UUID], monkeypatch)
+    device.rename(UUID, "Project Beta")
+
+    run_sync(rendered, device, [UUID], monkeypatch)
+
+    attachments = cfg.vault_source / "Project Beta" / "attachments"
+    assert [p.name for p in attachments.iterdir()] == ["Project Beta.pdf"]
+    assert "![[attachments/Project Beta.pdf]]" in note_for(cfg, "Project Beta").read_text(encoding="utf-8")
+
+
+def test_turning_the_renderer_off_keeps_the_existing_attachment_linked(cfg, device, monkeypatch, good_renderer):
+    device.add(UUID, "Project Alpha")
+    run_sync(renderer_cfg(cfg, good_renderer), device, [UUID], monkeypatch)
+
+    assert run_sync(cfg, device, [UUID], monkeypatch) == 0
+
+    attachment = cfg.vault_source / "Project Alpha" / "attachments" / "Project Alpha.pdf"
+    assert attachment.exists(), "an attachment we produced is never deleted"
+    assert "![[attachments/Project Alpha.pdf]]" in note_for(cfg, "Project Alpha").read_text(encoding="utf-8")
+
+
+def test_a_deleted_attachment_drops_out_of_the_note(cfg, device, monkeypatch, good_renderer):
+    device.add(UUID, "Project Alpha")
+    run_sync(renderer_cfg(cfg, good_renderer), device, [UUID], monkeypatch)
+    (cfg.vault_source / "Project Alpha" / "attachments" / "Project Alpha.pdf").unlink()
+
+    run_sync(cfg, device, [UUID], monkeypatch)
+
+    assert "![[attachments/" not in note_for(cfg, "Project Alpha").read_text(encoding="utf-8")
+
+
+def test_a_misconfigured_renderer_fails_the_command_not_the_vault(cfg, device, monkeypatch):
+    device.add(UUID, "Project Alpha")
+    broken = dataclasses.replace(cfg, render={"backend": "nonsense"})
+
+    monkeypatch.setattr(cli, "read_selection", lambda _ssh: [UUID])
+    monkeypatch.setattr(cli, "Ssh", lambda *a, **k: FakeSsh())
+    with pytest.raises(cli.RmosError, match="Unknown"):
+        cli.cmd_sync(broken, argparse.Namespace(dry_run=False, re_render=False, verbose=False))
+
+    assert list(cfg.vault_source.iterdir()) == []
 
 
 # --------------------------------------------------------------------------

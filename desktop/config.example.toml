@@ -13,3 +13,13 @@ source = "Sources/reMarkable"
 
 [rmos]
 state = "~/.local/state/rmos/state.json"
+
+# Rendering is off until you have confirmed which stroke format your firmware
+# writes. Run `rmos inspect` after a sync to find out, then point `command` at
+# a tool that supports that version. Placeholders: {raw} {uuid} {name} {out}.
+[render]
+backend = "none"
+# backend = "command"
+# command = ["my-renderer", "--input", "{raw}", "--output", "{out}"]
+# extension = "pdf"
+# timeout = 300

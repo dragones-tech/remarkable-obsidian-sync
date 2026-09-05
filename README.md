@@ -66,7 +66,8 @@ rmos sync            # import into the vault
 | `rmos doctor` | Verifies local `ssh`/`tar`, tablet reachability, the xochitl directory, a remote checksum tool, the selection file, and that the vault is writable. Exits non-zero if a required check fails. |
 | `rmos list` | Prints the UUID and visible name of each selected notebook. |
 | `rmos status` | Shows per-notebook `new` / `changed` / `unchanged`, plus notebooks previously synced but no longer selected. |
-| `rmos sync` | Imports changed notebooks. `--dry-run` reports without transferring or writing. |
+| `rmos sync` | Imports changed notebooks. `--dry-run` reports without transferring or writing; `--re-render` re-runs the renderer without transferring. |
+| `rmos inspect` | Reports the `.rm` stroke format of synced notebooks. Reads the local vault only — no tablet needed. |
 | `rmos select <uuid>` | Marks a notebook from the desktop, without opening a shell on the tablet. |
 | `rmos unselect <uuid>` | Unmarks it. Existing vault notes are always kept. |
 | `rmos init-config` | Writes a starter `~/.config/rmos/config.toml`. |
@@ -80,6 +81,51 @@ rmos sync            # import into the vault
 - **Nothing is ever deleted from the vault.** Unselecting or deleting a notebook on the tablet leaves the exported note in place. The only file rmos removes is a note it generated itself under a previous name, after a rename.
 - **One SSH connection per run.** Connections are multiplexed, so password authentication prompts once rather than once per file. Set `multiplex = false` in the config to disable.
 - **One failed notebook does not stop the rest.** Failures are reported per notebook and the command exits non-zero at the end.
+
+## Rendering
+
+Rendering handwriting to a PDF is **off by default**, and no `.rm` parser is bundled. The stroke format is version-sensitive: a parser built for the wrong version fails quietly or draws the wrong thing. Rather than guess, rmos tells you what your firmware actually writes and lets you plug in the tool that matches.
+
+After a first sync:
+
+```bash
+rmos inspect
+```
+
+```text
+Project Alpha  (550e8400-e29b-41d4-a716-446655440000)
+  folder:     ~/Vault/Sources/reMarkable/Project Alpha
+  type:       notebook
+  pages:      12
+  .rm files:  12
+  format:     v5 (12 files)
+  size:       24.0 KiB
+
+Summary
+  v5: 12 file(s)
+
+Your firmware writes v5 stroke data.
+Choose a renderer that supports v5, then set [render] in your config.
+```
+
+Then point the `command` backend at a tool that supports that version:
+
+```toml
+[render]
+backend = "command"
+command = ["my-renderer", "--input", "{raw}", "--output", "{out}"]
+extension = "pdf"
+timeout = 300
+```
+
+Placeholders: `{raw}` (the synced bundle directory), `{uuid}`, `{name}` (visible name), `{out}` (the exact path the command must write). The command runs **without a shell** — arguments are passed as a list, so a notebook name containing shell metacharacters is inert.
+
+Behaviour worth knowing:
+
+- The attachment is named after the notebook and embedded in the note as `![[attachments/Name.pdf]]`.
+- Enabling, disabling or changing the renderer re-renders **without re-downloading** anything. Only the rendering was stale, and the bundle is already local.
+- A renderer that fails is not fatal: the raw bundle is still imported, you get a warning, and the failure is recorded so the next sync does not silently retry a broken command. Change the config, or pass `--re-render`, to try again.
+- Attachments rmos produced are renamed along with the notebook. Nothing else in `attachments/` is ever touched.
 
 ## Device-side install
 
@@ -104,9 +150,10 @@ make lint
 
 The desktop MVP is implemented and tested against the acceptance criteria in `SPEC.md`: incremental sync, rename identity, collision safety, non-destructive semantics, and a device that is read-only apart from our own state directory.
 
+Rendering (`SPEC.md` phase 2) is wired end to end behind a pluggable backend, with `rmos inspect` to identify which stroke format your firmware writes. No parser ships with rmos — see [Rendering](#rendering).
+
 Still staged as follow-up work:
 
-- Rendering handwriting to PDF/PNG (`SPEC.md` phase 2) — deliberately not implemented until a parser has been validated against the actual firmware's file format.
 - Automatic sync on USB attach (phase 2).
 - The on-device **Copy to Obsidian** UI action (phase 3). Until then, mark notebooks with `rmos select <uuid>` from the desktop or `rmos-select` on the tablet.
 
