@@ -631,21 +631,21 @@ def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
-def _render_attachment(
+def _render_attachments(
     renderer: Renderer,
     dest: Path,
     nb: Notebook,
-    previous_attachment: str | None,
+    previous: list[str],
     removed: list[str] | None = None,
-) -> tuple[str | None, str]:
-    """Render the notebook, returning (attachment filename, state marker).
+) -> tuple[list[str], str]:
+    """Render the notebook's pages, returning (attachment names, state marker).
 
     A renderer failure is not fatal: the raw bundle is already imported, so we
-    warn, keep whatever attachment survives from an earlier run, and record the
+    warn, keep whatever attachments survive from an earlier run, and record the
     failure so the next sync does not silently retry a broken command.
     """
     attachments = dest / "attachments"
-    produced: Path | None = None
+    produced: list[Path] = []
     marker = renderer.signature
     removed = [] if removed is None else removed
 
@@ -653,26 +653,40 @@ def _render_attachment(
         produced = renderer.render(
             raw=dest / "raw",
             uuid=nb.uuid,
-            visible_name=nb.visible_name,
+            base_name=dest.name,
             out_dir=attachments,
         )
     except RenderError as exc:
         print(f"warning: {nb.visible_name}: {exc}", file=sys.stderr)
         marker = f"failed:{renderer.signature}"
 
-    if produced is None:
-        # Nothing rendered this run. Keep the previous embed if its file is
-        # still there, so turning the renderer off does not orphan the PDF.
-        if previous_attachment and (attachments / previous_attachment).is_file():
-            return previous_attachment, marker
-        return None, marker
+    if not produced:
+        # Nothing rendered this run. Keep the previous embeds if their files
+        # are still there, so turning the renderer off does not orphan them.
+        return ([name for name in previous if (attachments / name).is_file()], marker)
 
-    if previous_attachment and previous_attachment != produced.name:
-        stale = attachments / previous_attachment
+    names = [path.name for path in produced]
+    # Pages we produced before and no longer do - a notebook that lost pages,
+    # or was renamed - are ours to clean up. Nothing else is touched.
+    for stale_name in previous:
+        if stale_name in names:
+            continue
+        stale = attachments / stale_name
         if stale.is_file():
             stale.unlink()
             removed.append(stale.name)
-    return produced.name, marker
+    return (names, marker)
+
+
+def _previous_attachments(entry: dict) -> list[str]:
+    """What we attached last time. State written before pages were supported
+    named a single file; read it as a one-page list rather than forcing a
+    re-render of everything."""
+    names = entry.get("attachments")
+    if isinstance(names, list):
+        return [str(n) for n in names]
+    single = entry.get("attachment")
+    return [str(single)] if single else []
 
 
 def _sync_one(
@@ -748,23 +762,23 @@ def _sync_one(
             dest.mkdir(parents=True, exist_ok=True)
             replace_tree(staging, dest / "raw")
 
-    attachment, render_marker = _render_attachment(
-        renderer, dest, nb, previous.get("attachment"), outcome.setdefault("removed", [])
+    attachments, render_marker = _render_attachments(
+        renderer, dest, nb, _previous_attachments(previous), outcome.setdefault("removed", [])
     )
 
     note_name = f"{dest.name}.md"
-    write_text_atomic(dest / note_name, render_markdown(nb, fingerprint, pdf_name=attachment))
+    write_text_atomic(dest / note_name, render_markdown(nb, fingerprint, attachments=attachments))
     for removed in prune_stale_notes(dest, uuid, note_name):
         outcome.setdefault("removed", []).append(removed.name)
 
-    outcome["attachment"] = attachment
+    outcome["attachments"] = attachments
     docs[uuid] = {
         "fingerprint": fingerprint,
         "visible_name": nb.visible_name,
         "destination": str(dest),
         "synced_at": datetime.now(UTC).isoformat(),
         "render": render_marker,
-        "attachment": attachment,
+        "attachments": attachments,
     }
     return True
 

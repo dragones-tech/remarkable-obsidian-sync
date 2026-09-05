@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .core import safe_name
+from .core import page_order, safe_name
 
 # The first 43 bytes of a `.rm` file identify the stroke format. Matching is by
 # prefix, so trailing padding differences do not matter.
@@ -143,8 +143,13 @@ class Renderer(Protocol):
     name: str
     signature: str
 
-    def render(self, *, raw: Path, uuid: str, visible_name: str, out_dir: Path) -> Path | None:
-        """Return the attachment written into `out_dir`, or None if it produced nothing."""
+    def render(self, *, raw: Path, uuid: str, base_name: str, out_dir: Path) -> list[Path]:
+        """Return the attachments written into `out_dir`, in reading order.
+
+        A list rather than one file because a notebook has pages, and pages
+        read better in Obsidian as images in flow than as one document behind
+        a viewer.
+        """
 
 
 class NullRenderer:
@@ -153,8 +158,8 @@ class NullRenderer:
     name = "none"
     signature = "none"
 
-    def render(self, *, raw: Path, uuid: str, visible_name: str, out_dir: Path) -> Path | None:
-        return None
+    def render(self, *, raw: Path, uuid: str, base_name: str, out_dir: Path) -> list[Path]:
+        return []
 
 
 PLACEHOLDERS = ("{raw}", "{uuid}", "{name}", "{out}")
@@ -197,8 +202,8 @@ class CommandRenderer:
             rendered.append(argument)
         return rendered
 
-    def render(self, *, raw: Path, uuid: str, visible_name: str, out_dir: Path) -> Path | None:
-        attachment = out_dir / f"{safe_name(visible_name, uuid)}.{self.extension}"
+    def render(self, *, raw: Path, uuid: str, base_name: str, out_dir: Path) -> list[Path]:
+        attachment = out_dir / f"{safe_name(base_name, uuid)}.{self.extension}"
         out_dir.mkdir(parents=True, exist_ok=True)
         staging = out_dir / f".{attachment.name}.rmos-partial"
         staging.unlink(missing_ok=True)
@@ -207,7 +212,7 @@ class CommandRenderer:
             {
                 "{raw}": str(raw),
                 "{uuid}": uuid,
-                "{name}": visible_name,
+                "{name}": base_name,
                 "{out}": str(staging),
             }
         )
@@ -232,7 +237,55 @@ class CommandRenderer:
             raise RenderError("render command produced no output file")
 
         staging.replace(attachment)
-        return attachment
+        return [attachment]
+
+
+class ThumbnailRenderer:
+    """Uses the page previews the tablet has already drawn.
+
+    No parser, so nothing here can misread a stroke format: these are the
+    device's own renders, copied out in reading order. They are small - 384x512
+    against a 1404x1872 screen - which is fine for drawings and large writing
+    and may not be for dense notes. That is the trade this backend makes, and
+    it costs nothing to try before committing to a real renderer.
+    """
+
+    name = "thumbnails"
+    signature = "thumbnails:1"
+
+    def render(self, *, raw: Path, uuid: str, base_name: str, out_dir: Path) -> list[Path]:
+        content_file = raw / f"{uuid}.content"
+        if not content_file.is_file():
+            return []
+        try:
+            content = json.loads(content_file.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RenderError(f"could not read {content_file.name}: {exc}") from exc
+        if not isinstance(content, dict):
+            return []
+
+        # Books and PDFs have page previews too, but a page of someone else's
+        # book is not a note, and there would be hundreds of them.
+        if str(content.get("fileType") or "") != "notebook":
+            return []
+
+        source_dir = raw / f"{uuid}.thumbnails"
+        if not source_dir.is_dir():
+            return []
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stem = safe_name(base_name, uuid)
+        written: list[Path] = []
+        for number, page_id in enumerate(page_order(content), start=1):
+            thumbnail = source_dir / f"{page_id}.png"
+            if not thumbnail.is_file():
+                continue
+            # Named after the notebook so two notebooks' pages cannot collide
+            # in a vault that resolves attachments by filename.
+            target = out_dir / f"{stem} p{number:02d}.png"
+            shutil.copyfile(thumbnail, target)
+            written.append(target)
+        return written
 
 
 def build_renderer(settings: dict) -> Renderer:
@@ -240,6 +293,8 @@ def build_renderer(settings: dict) -> Renderer:
     backend = settings.get("backend", "none")
     if backend in ("none", "", None):
         return NullRenderer()
+    if backend == "thumbnails":
+        return ThumbnailRenderer()
     if backend == "command":
         command = settings.get("command")
         if not isinstance(command, list) or not all(isinstance(a, str) for a in command):
@@ -249,4 +304,6 @@ def build_renderer(settings: dict) -> Renderer:
             extension=str(settings.get("extension", "pdf")),
             timeout=int(settings.get("timeout", 300)),
         )
-    raise ValueError(f"Unknown [render] backend: {backend!r} (expected 'none' or 'command')")
+    raise ValueError(
+        f"Unknown [render] backend: {backend!r} (expected 'none', 'thumbnails' or 'command')"
+    )

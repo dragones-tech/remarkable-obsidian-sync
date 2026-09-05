@@ -174,7 +174,7 @@ def test_unsetting_something_that_was_never_set_is_harmless(config_path):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("key", ["render.command", "remarkable.ssh_options", "render.backend", "rmos.state"])
+@pytest.mark.parametrize("key", ["render.command", "remarkable.ssh_options", "rmos.state"])
 def test_keys_that_could_launch_a_process_are_not_settable(config_path, key):
     """A UI bug must not be able to turn into command execution."""
     with pytest.raises(ConfigError, match="not settable"):
@@ -247,3 +247,26 @@ def test_a_type_we_cannot_write_is_an_error_not_a_guess():
         dump_toml({"a": {"b": 1.5}})
     with pytest.raises(ConfigError, match="Cannot write"):
         dump_toml({"a": {"b": {"nested": "too deep"}}})
+
+
+def test_the_render_backend_is_settable_because_it_names_a_backend(config_path):
+    """Choosing "command" activates a command line the user wrote by hand; it
+    cannot introduce one, which is what the allowlist exists to prevent."""
+    write_setting(config_path, "render.backend", "thumbnails")
+    assert load_config(config_path).render["backend"] == "thumbnails"
+
+
+@pytest.mark.parametrize("backend", ["none", "thumbnails", "command"])
+def test_every_real_backend_is_accepted(config_path, backend):
+    write_setting(config_path, "render.backend", backend)
+
+
+def test_a_backend_that_does_not_exist_is_refused_at_write_time(config_path):
+    """Better than a config that only fails on the next run."""
+    with pytest.raises(ConfigError, match="must be one of"):
+        write_setting(config_path, "render.backend", "magic")
+
+
+def test_the_render_command_is_still_not_settable(config_path):
+    with pytest.raises(ConfigError, match="not settable"):
+        write_setting(config_path, "render.command", ["anything"])

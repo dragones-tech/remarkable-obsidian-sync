@@ -8,7 +8,7 @@ the device-side shell scripts. `make check` runs lint and the suite.
 What remains is staged deliberately, because each item needs evidence from a
 real device before it can be written safely.
 
-## Phase 2a - rendering (seam done, parser outstanding)
+## Phase 2a - rendering (thumbnails shipped, full-resolution outstanding)
 
 The `Renderer` protocol, the `none` and `command` backends, attachment
 handling and `rmos inspect` are implemented and tested. What remains needs a

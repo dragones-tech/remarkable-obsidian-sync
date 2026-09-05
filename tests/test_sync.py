@@ -336,7 +336,7 @@ def test_render_state_is_recorded_so_it_does_not_rerun(cfg, device, monkeypatch,
 
     assert attachment.stat().st_mtime_ns == before
     entry = json.loads(cfg.state.read_text(encoding="utf-8"))["documents"][UUID]
-    assert entry["attachment"] == "Project Alpha.pdf"
+    assert entry["attachments"] == ["Project Alpha.pdf"]
     assert entry["render"].startswith("command:")
 
 

@@ -130,31 +130,41 @@ Only settings that cannot launch a process are writable this way. The render com
 
 ## Rendering
 
-Rendering handwriting to a PDF is **off by default**, and no `.rm` parser is bundled. The stroke format is version-sensitive: a parser built for the wrong version fails quietly or draws the wrong thing. Rather than guess, rmos tells you what your firmware actually writes and lets you plug in the tool that matches.
+Three backends, set with `[render] backend`:
 
-After a first sync:
+| | What it produces | Cost |
+| --- | --- | --- |
+| `none` | Raw data only (default) | — |
+| `thumbnails` | One PNG per page, from the previews the tablet already drew | No parser, nothing to install |
+| `command` | Whatever an external tool produces | You choose and validate the tool |
 
 ```bash
-rmos inspect
+rmos config set render.backend thumbnails
+rmos sync --re-render     # re-renders from the bundle already in the vault
 ```
 
-```text
-Project Alpha  (550e8400-e29b-41d4-a716-446655440000)
-  folder:     ~/Vault/Sources/reMarkable/Project Alpha
-  type:       notebook
-  pages:      12
-  .rm files:  12
-  format:     v6 (12 files)
-  size:       24.0 KiB
+### thumbnails
 
-Summary
-  v6: 12 file(s)
+The tablet draws a preview of every page and keeps it in the bundle, so this
+needs no `.rm` parser at all — nothing here can misread a stroke format. Pages
+are copied out in reading order and embedded in the note, so you scroll the
+note and read the notebook in flow.
 
-Your firmware writes v6 stroke data.
-Choose a renderer that supports v6, then set [render] in your config.
-```
+They are **384×512** against the tablet's 1404×1872 screen. That is fine for
+drawings and large writing; for dense handwriting it may not be. Trying it
+costs one `--re-render`, which transfers nothing.
 
-Then point the `command` backend at a tool that supports that version:
+Only notebooks are rendered. A book or PDF has page previews too, but a page
+of someone else's book is not a note and there would be hundreds of them.
+
+Pages are named after the notebook (`Quick sheets p01.png`) because Obsidian
+resolves attachments by filename, and `page-01.png` in every folder would be
+ambiguous.
+
+### command
+
+For a real renderer at full resolution. Point it at a tool that supports your
+firmware's stroke format — `rmos inspect` reports which:
 
 ```toml
 [render]
@@ -164,14 +174,23 @@ extension = "pdf"
 timeout = 300
 ```
 
-Placeholders: `{raw}` (the synced bundle directory), `{uuid}`, `{name}` (visible name), `{out}` (the exact path the command must write). The command runs **without a shell** — arguments are passed as a list, so a notebook name containing shell metacharacters is inert.
+Placeholders: `{raw}` (the synced bundle directory), `{uuid}`, `{name}` (the
+vault folder name), `{out}` (the exact path the command must write). The
+command runs **without a shell** — arguments are passed as a list, so a
+notebook name containing shell metacharacters is inert. `render.command` is
+deliberately not writable by `rmos config set`, so no UI can introduce one.
 
-Behaviour worth knowing:
+### Behaviour worth knowing
 
-- The attachment is named after the notebook and embedded in the note as `![[attachments/Name.pdf]]`.
-- Enabling, disabling or changing the renderer re-renders **without re-downloading** anything. Only the rendering was stale, and the bundle is already local.
-- A renderer that fails is not fatal: the raw bundle is still imported, you get a warning, and the failure is recorded so the next sync does not silently retry a broken command. Change the config, or pass `--re-render`, to try again.
-- Attachments rmos produced are renamed along with the notebook. Nothing else in `attachments/` is ever touched.
+- Enabling, disabling or changing the renderer re-renders **without
+  re-downloading** anything. Only the rendering was stale, and the bundle is
+  already local.
+- A renderer that fails is not fatal: the raw bundle is still imported, you
+  get a warning, and the failure is recorded so the next sync does not
+  silently retry a broken command. Change the config, or pass `--re-render`,
+  to try again.
+- Pages rmos produced follow a rename, and ones it no longer produces are
+  removed. Nothing else in `attachments/` is ever touched.
 
 ## Sync automatically on USB attach
 

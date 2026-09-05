@@ -155,6 +155,16 @@ WRITABLE_KEYS: dict[str, type | tuple[type, ...]] = {
     "selection.sources": list,
     "selection.tags": list,
     "selection.tag": str,
+    # The backend is a name from a closed set, not a command. Choosing
+    # "command" only activates a command line the user wrote by hand in
+    # config.toml; it cannot introduce one.
+    "render.backend": str,
+}
+
+# Settings whose value must come from a fixed set, so a UI cannot write a
+# spelling that would only fail later at load time.
+ALLOWED_VALUES: dict[str, frozenset[str]] = {
+    "render.backend": frozenset({"none", "thumbnails", "command"}),
 }
 
 
@@ -196,6 +206,9 @@ def write_setting(path: Path, key: str, value: Any) -> Path:
         raise ConfigError(f"{key} expects a string.")
     if expected is list and (not isinstance(value, list) or not all(isinstance(i, str) for i in value)):
         raise ConfigError(f"{key} expects a list of strings.")
+    allowed = ALLOWED_VALUES.get(key)
+    if allowed is not None and value not in allowed:
+        raise ConfigError(f"{key} must be one of: {', '.join(sorted(allowed))}.")
 
     local = local_path_for(path.expanduser())
     tables = _read_toml(local)

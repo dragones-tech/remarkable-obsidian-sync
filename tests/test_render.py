@@ -6,10 +6,12 @@ import sys
 
 import pytest
 
+from rmos.core import page_order
 from rmos.render import (
     CommandRenderer,
     NullRenderer,
     RenderError,
+    ThumbnailRenderer,
     build_renderer,
     detect_rm_version,
     inspect_bundle,
@@ -130,7 +132,7 @@ def test_a_bundle_with_no_stroke_data_is_not_renderable(tmp_path):
 def test_default_backend_renders_nothing(tmp_path):
     renderer = build_renderer({})
     assert isinstance(renderer, NullRenderer)
-    assert renderer.render(raw=tmp_path, uuid=UUID, visible_name="A", out_dir=tmp_path) is None
+    assert renderer.render(raw=tmp_path, uuid=UUID, base_name="A", out_dir=tmp_path) == []
 
 
 @pytest.mark.parametrize("settings", [{"backend": "none"}, {"backend": ""}, {}])
@@ -187,9 +189,16 @@ def helper(tmp_path):
 
 
 def run_render(renderer, tmp_path, name="Project Alpha"):
+    """Render and return the single attachment, for the one-file backends."""
+    produced = render_all(renderer, tmp_path, name)
+    assert len(produced) == 1, f"expected one attachment, got {produced}"
+    return produced[0]
+
+
+def render_all(renderer, tmp_path, name="Project Alpha"):
     raw = tmp_path / "raw"
     raw.mkdir(exist_ok=True)
-    return renderer.render(raw=raw, uuid=UUID, visible_name=name, out_dir=tmp_path / "attachments")
+    return renderer.render(raw=raw, uuid=UUID, base_name=name, out_dir=tmp_path / "attachments")
 
 
 def test_successful_render_names_the_attachment_after_the_notebook(tmp_path, helper):
@@ -281,3 +290,132 @@ def test_the_command_is_not_run_through_a_shell(tmp_path, helper):
     produced = run_render(renderer, tmp_path, name="; touch /tmp/rmos-pwned #")
 
     assert produced.read_text(encoding="utf-8") == "; touch /tmp/rmos-pwned #"
+
+
+# --------------------------------------------------------------------------
+# Page ordering
+# --------------------------------------------------------------------------
+
+
+def cpages(*entries):
+    """Build a `.content` with the current page layout."""
+    pages = []
+    for page_id, idx, deleted in entries:
+        page = {"id": page_id}
+        if idx is not None:
+            page["idx"] = {"timestamp": "1:2", "value": idx}
+        if deleted:
+            page["deleted"] = {"timestamp": "1:1", "value": 1}
+        pages.append(page)
+    return {"fileType": "notebook", "cPages": {"pages": pages}}
+
+
+def test_pages_follow_the_fractional_index_the_device_treats_as_canonical():
+    """Firmware 20260612085811 writes ba, bb, bc... and reorders by editing
+    those, so the array can be stale where the index is not."""
+    content = cpages(("c", "bc", False), ("a", "ba", False), ("b", "bb", False))
+    assert page_order(content) == ["a", "b", "c"]
+
+
+def test_deleted_pages_are_dropped():
+    """They are still listed; exporting them would show pages thrown away."""
+    content = cpages(("a", "ba", False), ("gone", "bb", True), ("b", "bc", False))
+    assert page_order(content) == ["a", "b"]
+
+
+def test_array_order_is_used_when_a_page_carries_no_index():
+    content = cpages(("first", None, False), ("second", "bb", False))
+    assert page_order(content) == ["first", "second"]
+
+
+def test_the_older_flat_page_list_still_reads():
+    assert page_order({"pages": ["a", "b", "c"]}) == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize("content", [{}, {"cPages": {}}, {"pages": "nope"}, {"cPages": {"pages": [{}]}}])
+def test_a_layout_we_do_not_recognise_yields_no_pages(content):
+    assert page_order(content) == []
+
+
+# --------------------------------------------------------------------------
+# The thumbnail backend
+# --------------------------------------------------------------------------
+
+
+def notebook_bundle(tmp_path, pages=("a", "b"), file_type="notebook", thumbs=None):
+    raw = tmp_path / "raw"
+    (raw / f"{UUID}.thumbnails").mkdir(parents=True, exist_ok=True)
+    content = {
+        "fileType": file_type,
+        "cPages": {"pages": [{"id": p, "idx": {"value": f"b{chr(97 + i)}"}} for i, p in enumerate(pages)]},
+    }
+    (raw / f"{UUID}.content").write_text(json.dumps(content), encoding="utf-8")
+    for page in (pages if thumbs is None else thumbs):
+        (raw / f"{UUID}.thumbnails" / f"{page}.png").write_bytes(b"\x89PNG" + page.encode())
+    return raw
+
+
+def render_thumbs(tmp_path, **kw):
+    raw = notebook_bundle(tmp_path, **kw)
+    return ThumbnailRenderer().render(
+        raw=raw, uuid=UUID, base_name="Quick sheets", out_dir=tmp_path / "attachments"
+    )
+
+
+def test_thumbnails_are_copied_in_reading_order(tmp_path):
+    produced = render_thumbs(tmp_path, pages=("first", "second", "third"))
+
+    assert [p.name for p in produced] == [
+        "Quick sheets p01.png", "Quick sheets p02.png", "Quick sheets p03.png",
+    ]
+    assert produced[0].read_bytes().endswith(b"first")
+    assert produced[2].read_bytes().endswith(b"third")
+
+
+def test_pages_are_named_after_the_notebook_so_two_cannot_collide(tmp_path):
+    """Obsidian resolves attachments by filename, so page-01.png everywhere
+    would be ambiguous across notebooks."""
+    produced = render_thumbs(tmp_path, pages=("a",))
+    assert produced[0].name.startswith("Quick sheets ")
+
+
+def test_a_book_is_not_rendered_as_pages(tmp_path):
+    """A page of someone else's book is not a note, and there are hundreds."""
+    assert render_thumbs(tmp_path, file_type="epub") == []
+    assert render_thumbs(tmp_path, file_type="pdf") == []
+
+
+def test_a_page_with_no_thumbnail_is_skipped_without_shifting_the_rest(tmp_path):
+    produced = render_thumbs(tmp_path, pages=("a", "b", "c"), thumbs=("a", "c"))
+    assert [p.name for p in produced] == ["Quick sheets p01.png", "Quick sheets p03.png"]
+
+
+def test_a_bundle_with_no_thumbnails_renders_nothing(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / f"{UUID}.content").write_text(json.dumps({"fileType": "notebook"}), encoding="utf-8")
+    assert ThumbnailRenderer().render(raw=raw, uuid=UUID, base_name="X", out_dir=tmp_path / "a") == []
+
+
+def test_a_missing_content_file_renders_nothing(tmp_path):
+    (tmp_path / "raw").mkdir()
+    assert ThumbnailRenderer().render(
+        raw=tmp_path / "raw", uuid=UUID, base_name="X", out_dir=tmp_path / "a"
+    ) == []
+
+
+def test_an_unreadable_content_file_is_reported_not_ignored(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / f"{UUID}.content").write_text("{ not json", encoding="utf-8")
+    with pytest.raises(RenderError, match="could not read"):
+        ThumbnailRenderer().render(raw=raw, uuid=UUID, base_name="X", out_dir=tmp_path / "a")
+
+
+def test_the_thumbnail_backend_is_selectable():
+    assert build_renderer({"backend": "thumbnails"}).name == "thumbnails"
+
+
+def test_its_signature_is_stable_but_distinct():
+    assert ThumbnailRenderer().signature == ThumbnailRenderer().signature
+    assert ThumbnailRenderer().signature != NullRenderer().signature

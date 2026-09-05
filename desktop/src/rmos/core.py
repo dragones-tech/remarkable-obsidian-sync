@@ -316,7 +316,47 @@ def tag_census(index: dict[str, IndexEntry]) -> list[tuple[str, int]]:
     return sorted(counts.items(), key=lambda pair: (-pair[1], pair[0].casefold()))
 
 
-def render_markdown(notebook: Notebook, fingerprint: str, *, pdf_name: str | None = None) -> str:
+def page_order(content: dict) -> list[str]:
+    """The notebook's page ids, in the order the tablet shows them.
+
+    Two layouts exist. The current one keeps pages under `cPages` with a
+    fractional index (`ba`, `bb`, `bc`), which is what makes reordering cheap
+    on the device; the older one is a flat list. Deleted pages are still
+    listed and must be dropped, or the export would show pages the user threw
+    away.
+    """
+    pages = content.get("cPages", {}).get("pages")
+    if isinstance(pages, list):
+        live = [p for p in pages if isinstance(p, dict) and p.get("id") and not _is_deleted(p)]
+        # The array is usually already in order, but the fractional index is
+        # what the device treats as authoritative - so use it when every page
+        # carries one, and fall back to the given order when they do not.
+        indices = [_index_of(p) for p in live]
+        if all(i is not None for i in indices):
+            live = [p for _, p in sorted(zip(indices, live, strict=True), key=lambda pair: pair[0])]
+        return [str(p["id"]) for p in live]
+
+    flat = content.get("pages")
+    if isinstance(flat, list):
+        return [str(p) for p in flat if isinstance(p, str)]
+    return []
+
+
+def _is_deleted(page: dict) -> bool:
+    marker = page.get("deleted")
+    if isinstance(marker, dict):
+        return bool(marker.get("value"))
+    return bool(marker)
+
+
+def _index_of(page: dict) -> str | None:
+    idx = page.get("idx")
+    if isinstance(idx, dict) and isinstance(idx.get("value"), str):
+        return idx["value"]
+    return idx if isinstance(idx, str) else None
+
+
+def render_markdown(notebook: Notebook, fingerprint: str, *, attachments: list[str] | None = None) -> str:
     """Render the vault note.
 
     Deterministic on purpose: identical notebook content must produce a
@@ -333,8 +373,9 @@ def render_markdown(notebook: Notebook, fingerprint: str, *, pdf_name: str | Non
         f"# {notebook.visible_name}",
         "",
     ]
-    if pdf_name:
-        lines += [f"![[attachments/{pdf_name}]]", ""]
+    if attachments:
+        for name in attachments:
+            lines += [f"![[attachments/{name}]]", ""]
     else:
         lines += ["> Raw reMarkable notebook data is synchronized. Visual rendering is not enabled yet.", ""]
     return "\n".join(lines)

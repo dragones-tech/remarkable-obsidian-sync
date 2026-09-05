@@ -261,9 +261,24 @@ def test_markdown_carries_identity_and_fingerprint():
 
 def test_markdown_embeds_the_attachment_once_rendering_exists():
     nb = Notebook(UUID, "Project Alpha", None)
-    text = render_markdown(nb, "abc", pdf_name="Project Alpha.pdf")
+    text = render_markdown(nb, "abc", attachments=["Project Alpha.pdf"])
     assert "![[attachments/Project Alpha.pdf]]" in text
     assert "rendering is not enabled yet" not in text
+
+
+def test_markdown_embeds_pages_in_reading_order():
+    """The whole point of a multi-page render is reading it in flow."""
+    nb = Notebook(UUID, "Quick sheets", None)
+    text = render_markdown(nb, "abc", attachments=[f"Quick sheets p{n:02d}.png" for n in (1, 2, 3)])
+    positions = [text.index(f"Quick sheets p{n:02d}.png") for n in (1, 2, 3)]
+    assert positions == sorted(positions)
+    assert text.count("![[attachments/") == 3
+
+
+def test_markdown_with_no_attachments_says_so_rather_than_looking_finished():
+    nb = Notebook(UUID, "Quick sheets", None)
+    for empty in (None, []):
+        assert "rendering is not enabled yet" in render_markdown(nb, "abc", attachments=empty)
 
 
 def test_frontmatter_id_round_trips():
