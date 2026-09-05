@@ -4,6 +4,8 @@
 # Obsidian is asked by URI rather than by opening the file directly, so the
 # note lands in the vault it belongs to with its links and backlinks live,
 # rather than in whatever editor happens to own .md.
+# Single quotes here are deliberate: jq programs and filters.
+# shellcheck disable=SC2016
 set -uo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=/dev/null

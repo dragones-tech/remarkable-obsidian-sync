@@ -7,8 +7,8 @@
 # into root's home, where your service manager will never see it.
 set -eu
 
-HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-REPO=$(CDPATH= cd -- "$HERE/../.." && pwd)
+HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+REPO=$(CDPATH='' cd -- "$HERE/../.." && pwd)
 
 RULES_PATH=${RMOS_RULES_PATH:-/etc/udev/rules.d/99-rmos.rules}
 UNIT_DIR=${RMOS_UNIT_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}
@@ -81,7 +81,7 @@ if [ -z "$RMOS_BIN" ]; then
 fi
 case "$RMOS_BIN" in
   /*) ;;
-  *) RMOS_BIN=$(CDPATH= cd -- "$(dirname -- "$RMOS_BIN")" && pwd)/$(basename -- "$RMOS_BIN") ;;
+  *) RMOS_BIN=$(CDPATH='' cd -- "$(dirname -- "$RMOS_BIN")" && pwd)/$(basename -- "$RMOS_BIN") ;;
 esac
 if [ ! -x "$RMOS_BIN" ]; then
   echo "Not executable: $RMOS_BIN" >&2
@@ -140,6 +140,8 @@ fi
 
 if [ "$NOTIFY" = 1 ]; then
   # Leading '-' so a missing or failing notifier can never fail the sync.
+  # $SERVICE_RESULT is systemd's to expand, not ours.
+  # shellcheck disable=SC2016
   NOTIFY_LINE='ExecStopPost=-/bin/sh -c '"'"'if [ "$SERVICE_RESULT" = success ]; then notify-send "reMarkable" "Obsidian sync complete"; else notify-send -u critical "reMarkable" "Obsidian sync failed"; fi'"'"''
 else
   NOTIFY_LINE=''

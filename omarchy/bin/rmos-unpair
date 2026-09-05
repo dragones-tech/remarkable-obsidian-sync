@@ -1,6 +1,8 @@
 #!/bin/bash
 # Undo pairing: remove our key from the tablet and our block from ~/.ssh/config.
 # The key file itself is left in place; deleting it is your call.
+# Single quotes here are deliberate: jq programs and filters.
+# shellcheck disable=SC2016
 set -uo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=/dev/null

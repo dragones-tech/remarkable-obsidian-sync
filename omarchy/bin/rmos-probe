@@ -5,6 +5,8 @@
 # `ip`, no ping, no SSH. The bar widget polls this on a timer, and the whole
 # point of the icon is that it exists only while the tablet is connected - so
 # this must cost nothing to ask.
+# Single quotes here are deliberate: jq programs and filters.
+# shellcheck disable=SC2016
 set -uo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)

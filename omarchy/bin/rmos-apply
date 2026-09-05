@@ -5,6 +5,8 @@
 # tablet. Both are read by sync and unioned, so the two halves of the picker
 # stay independent - unchecking a tag never un-selects a notebook you picked
 # by hand.
+# Single quotes here are deliberate: jq programs and filters.
+# shellcheck disable=SC2016
 set -uo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=/dev/null
@@ -41,4 +43,4 @@ emit --argjson tags "$applied_tags" \
      --argjson selected "$(printf '%s\n' "${select[@]:-}"   | jq -R . | jq -sc 'map(select(. != ""))')" \
      --argjson unselected "$(printf '%s\n' "${unselect[@]:-}" | jq -R . | jq -sc 'map(select(. != ""))')" \
      --argjson failed "$(printf '%s\n' "${failed[@]:-}" | jq -R . | jq -sc 'map(select(. != ""))')" \
-  '{ok: ($failed | length) == 0, tags: $tags, selected: $selected, unselected: $unselected, failed: $failed}'
+  '{ok: (($failed | length) == 0), tags: $tags, selected: $selected, unselected: $unselected, failed: $failed}'

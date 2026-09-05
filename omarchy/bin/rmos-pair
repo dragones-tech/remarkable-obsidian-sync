@@ -8,6 +8,8 @@
 # This exists because sync-on-attach has no terminal, so it can never answer a
 # password prompt. Key authentication is not a convenience here, it is the
 # thing that makes unattended sync possible at all.
+# Single quotes here are deliberate: jq programs, and the askpass helper that must read $RMOS_PW at run time.
+# shellcheck disable=SC2016
 set -uo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=/dev/null

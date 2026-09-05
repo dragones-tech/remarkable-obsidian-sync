@@ -3,7 +3,7 @@ set -eu
 
 PREFIX="${RMOS_PREFIX:-/usr/local/bin}"
 STATE_DIR="${RMOS_STATE_DIR:-/home/root/.local/share/rmos}"
-HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
 mkdir -p "$STATE_DIR"
 [ -f "$STATE_DIR/selected.txt" ] || {
