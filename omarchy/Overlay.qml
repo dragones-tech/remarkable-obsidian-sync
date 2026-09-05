@@ -55,7 +55,6 @@ Item {
   property var originalDocs: ({})
 
   property string filterText: ""
-  property int focusedSection: 0   // 0 tags, 1 notebooks
 
   readonly property color background: Color.menu.background
   readonly property color foreground: Color.menu.text
@@ -385,9 +384,6 @@ Item {
             if (root.view === "pair") root.pair()
             else if (event.modifiers & Qt.ControlModifier) root.saveAndSync()
             else root.apply()
-            event.accepted = true
-          } else if (event.key === Qt.Key_Tab && root.view === "picker") {
-            root.focusedSection = root.focusedSection === 0 ? 1 : 0
             event.accepted = true
           } else if (event.key === Qt.Key_Slash && root.view === "picker") {
             filterField.forceActiveFocus()
