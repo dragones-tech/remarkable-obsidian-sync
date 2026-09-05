@@ -1,0 +1,9 @@
+#!/bin/bash
+# Every notebook on the tablet, with its folder, tags and selection state.
+# This is what the picker is drawn from. Reads the tablet's whole document
+# index, so it is on-demand only.
+set -uo pipefail
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=/dev/null
+. "$here/_common.sh"
+run_rmos index "$@"

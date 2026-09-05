@@ -1,0 +1,9 @@
+{
+  "rmosPath": "",
+  "host": "10.11.99.1",
+  "user": "root",
+  "vendor": "04b3",
+  "product": "4010",
+  "pollSeconds": 4,
+  "autoSync": false
+}

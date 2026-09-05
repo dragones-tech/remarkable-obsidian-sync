@@ -1,0 +1,7 @@
+#!/bin/bash
+# Sync now. --dry-run reports without writing anything.
+set -uo pipefail
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=/dev/null
+. "$here/_common.sh"
+run_rmos sync "$@"

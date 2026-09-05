@@ -1,0 +1,47 @@
+#!/bin/bash
+# Is the reMarkable plugged in?
+#
+# Deliberately the cheapest thing that can answer that: a walk of /sys, no
+# `ip`, no ping, no SSH. The bar widget polls this on a timer, and the whole
+# point of the icon is that it exists only while the tablet is connected - so
+# this must cost nothing to ask.
+set -uo pipefail
+
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=/dev/null
+. "$here/_common.sh"
+
+vendor=$(setting '.vendor' "$DEFAULT_VENDOR")
+product=$(setting '.product' "$DEFAULT_PRODUCT")
+
+# udev matches on the USB device's attributes, which sit on an ancestor of the
+# network interface. This walk is the same one ATTRS{} does in a rule.
+usb_ids_of() {
+  local dev
+  dev=$(readlink -f "/sys/class/net/$1/device" 2>/dev/null) || return 1
+  while [[ -n $dev && $dev != / ]]; do
+    if [[ -r $dev/idVendor && -r $dev/idProduct ]]; then
+      printf '%s %s\n' "$(<"$dev/idVendor")" "$(<"$dev/idProduct")"
+      return 0
+    fi
+    dev=${dev%/*}
+  done
+  return 1
+}
+
+for path in /sys/class/net/*; do
+  iface=${path##*/}
+  [[ $iface == lo ]] && continue
+  [[ -e $path/device ]] || continue
+  ids=$(usb_ids_of "$iface") || continue
+  read -r found_vendor found_product <<<"$ids"
+  if [[ $found_vendor == "$vendor" && $found_product == "$product" ]]; then
+    operstate=$(cat "$path/operstate" 2>/dev/null || printf 'unknown')
+    emit --arg iface "$iface" --arg state "$operstate" \
+         --arg vendor "$found_vendor" --arg product "$found_product" \
+      '{connected: true, interface: $iface, operstate: $state, vendor: $vendor, product: $product}'
+    exit 0
+  fi
+done
+
+emit '{connected: false}'

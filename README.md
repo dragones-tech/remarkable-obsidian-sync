@@ -30,7 +30,8 @@ The MVP is intentionally one-way: reMarkable -> Obsidian.
 - `remarkable/` - tiny device-side scripts/state.
 - `desktop/` - desktop sync client.
 - `docs/` - architecture and implementation notes.
-- `tests/` - desktop-side and device-script tests.
+- `omarchy/` - Omarchy desktop plugin (bar widget and picker).
+- `tests/` - desktop-side, device-script and plugin tests.
 - `SPEC.md` - product/technical specification.
 
 ## Quick start

@@ -1,0 +1,9 @@
+#!/bin/bash
+# What the tablet holds that the vault does not. Costs an SSH round trip per
+# selected notebook, so the widget asks only when the tablet appears or the
+# panel is opened - never on the poll timer.
+set -uo pipefail
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=/dev/null
+. "$here/_common.sh"
+run_rmos status "$@"

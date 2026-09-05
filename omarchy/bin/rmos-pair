@@ -1,0 +1,88 @@
+#!/bin/bash
+# Install an SSH key on the tablet, using its password once.
+#
+# The password arrives on stdin, never as an argument: argv is visible to
+# anyone who can run `ps`. It is used to copy a key across and is then gone -
+# nothing writes it to disk.
+#
+# This exists because sync-on-attach has no terminal, so it can never answer a
+# password prompt. Key authentication is not a convenience here, it is the
+# thing that makes unattended sync possible at all.
+set -uo pipefail
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=/dev/null
+. "$here/_common.sh"
+
+host=$(setting '.host' "10.11.99.1")
+user=$(setting '.user' "root")
+key="${RMOS_KEY:-$HOME/.ssh/rmos_remarkable}"
+ssh_config="${RMOS_SSH_CONFIG:-$HOME/.ssh/config}"
+target="$user@$host"
+
+BEGIN_MARK="# >>> rmos (remarkable-sync) >>>"
+END_MARK="# <<< rmos (remarkable-sync) <<<"
+
+check_only=0
+[[ ${1:-} == --check ]] && check_only=1
+
+already_paired() {
+  ssh -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=accept-new \
+      -i "$key" "$target" 'echo rmos-ok' 2>/dev/null | grep -q rmos-ok
+}
+
+if (( check_only )); then
+  if [[ -f $key ]] && already_paired; then
+    emit --arg key "$key" '{paired: true, key: $key}'
+  else
+    emit --arg key "$key" '{paired: false, key: $key}'
+  fi
+  exit 0
+fi
+
+if [[ -f $key ]] && already_paired; then
+  emit --arg key "$key" '{ok: true, already: true, key: $key}'
+  exit 0
+fi
+
+IFS= read -r password || true
+[[ -n ${password:-} ]] || die_json "No password given. Pipe the tablet's password (Settings -> Help -> About) on stdin."
+
+mkdir -p "$HOME/.ssh"
+chmod 700 "$HOME/.ssh"
+[[ -f $key ]] || ssh-keygen -t ed25519 -N '' -C 'rmos-sync' -f "$key" -q \
+  || die_json "could not create $key"
+
+# ssh reads the password from this helper rather than a terminal. The helper
+# holds no secret itself; the value arrives through the environment.
+askpass=$(mktemp) || die_json "could not create a temporary file"
+trap 'rm -f "$askpass"' EXIT
+printf '#!/bin/sh\nprintf "%%s\\n" "$RMOS_PW"\n' >"$askpass"
+chmod 700 "$askpass"
+
+copy_output=$(
+  RMOS_PW="$password" SSH_ASKPASS="$askpass" SSH_ASKPASS_REQUIRE=force DISPLAY="${DISPLAY:-:0}" \
+  ssh-copy-id -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+              -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+              -i "$key.pub" "$target" 2>&1
+) || die_json "could not install the key: $(printf '%s' "$copy_output" | tail -n 2 | tr '\n' ' ')"
+
+unset password
+
+# Point ssh at the key for this host, so rmos needs no extra configuration.
+# Fenced so it can be removed again without disturbing anything around it.
+if ! grep -qF "$BEGIN_MARK" "$ssh_config" 2>/dev/null; then
+  touch "$ssh_config"
+  chmod 600 "$ssh_config"
+  {
+    printf '\n%s\n' "$BEGIN_MARK"
+    printf 'Host %s\n    IdentityFile %s\n    IdentitiesOnly yes\n' "$host" "$key"
+    printf '%s\n' "$END_MARK"
+  } >>"$ssh_config"
+fi
+
+if already_paired; then
+  emit --arg key "$key" --arg cfg "$ssh_config" \
+    '{ok: true, already: false, key: $key, ssh_config: $cfg}'
+else
+  die_json "the key was copied but key authentication still fails"
+fi

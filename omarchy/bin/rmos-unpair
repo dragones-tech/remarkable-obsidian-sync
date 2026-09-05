@@ -1,0 +1,40 @@
+#!/bin/bash
+# Undo pairing: remove our key from the tablet and our block from ~/.ssh/config.
+# The key file itself is left in place; deleting it is your call.
+set -uo pipefail
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=/dev/null
+. "$here/_common.sh"
+
+host=$(setting '.host' "10.11.99.1")
+user=$(setting '.user' "root")
+key="${RMOS_KEY:-$HOME/.ssh/rmos_remarkable}"
+ssh_config="${RMOS_SSH_CONFIG:-$HOME/.ssh/config}"
+
+BEGIN_MARK="# >>> rmos (remarkable-sync) >>>"
+END_MARK="# <<< rmos (remarkable-sync) <<<"
+
+removed_remote=false
+if [[ -f $key.pub ]]; then
+  pub=$(cut -d' ' -f2 <"$key.pub")
+  if ssh -o BatchMode=yes -o ConnectTimeout=6 -i "$key" "$user@$host" \
+       "f=/home/root/.ssh/authorized_keys; [ -f \"\$f\" ] && grep -v -F '$pub' \"\$f\" > \"\$f.rmos\" && mv \"\$f.rmos\" \"\$f\"" \
+       2>/dev/null; then
+    removed_remote=true
+  fi
+fi
+
+removed_local=false
+if [[ -f $ssh_config ]] && grep -qF "$BEGIN_MARK" "$ssh_config"; then
+  tmp=$(mktemp)
+  awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
+    $0 == b { skip = 1; next }
+    $0 == e { skip = 0; next }
+    !skip   { print }
+  ' "$ssh_config" >"$tmp" && mv "$tmp" "$ssh_config"
+  chmod 600 "$ssh_config"
+  removed_local=true
+fi
+
+emit --argjson remote "$removed_remote" --argjson local "$removed_local" --arg key "$key" \
+  '{ok: true, removed_from_tablet: $remote, removed_from_ssh_config: $local, key_kept_at: $key}'

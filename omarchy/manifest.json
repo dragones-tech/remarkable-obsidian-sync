@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.dragones-tech.remarkable-sync",
+  "name": "reMarkable Sync",
+  "version": "0.1.0",
+  "author": "dragones-tech",
+  "license": "MIT",
+  "description": "A bar icon that appears when a reMarkable is plugged in, showing which tagged notebooks have not reached your Obsidian vault yet, with a picker for choosing what syncs",
+  "kinds": [
+    "bar-widget",
+    "overlay"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "barWidget": "BarWidget.qml",
+    "overlay": "Overlay.qml"
+  },
+  "barWidget": {
+    "displayName": "reMarkable Sync",
+    "description": "Pending reMarkable notebooks, and a button to sync them to Obsidian",
+    "category": "Files",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

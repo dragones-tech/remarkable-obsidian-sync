@@ -1,0 +1,44 @@
+#!/bin/bash
+# Persist what the picker chose.
+#
+# Tags go to the rmos config; individual notebooks go to selected.txt on the
+# tablet. Both are read by sync and unioned, so the two halves of the picker
+# stay independent - unchecking a tag never un-selects a notebook you picked
+# by hand.
+set -uo pipefail
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=/dev/null
+. "$here/_common.sh"
+
+tags=""
+declare -a select=() unselect=()
+
+while (( $# > 0 )); do
+  case "$1" in
+    --tags)     tags="${2:?}"; shift 2 ;;
+    --select)   select+=("${2:?}"); shift 2 ;;
+    --unselect) unselect+=("${2:?}"); shift 2 ;;
+    *) die_json "unknown option: $1" ;;
+  esac
+done
+
+rmos=$(resolve_rmos)
+applied_tags="null"
+
+if [[ -n $tags ]]; then
+  jq -e 'type == "array" and all(.[]; type == "string")' <<<"$tags" >/dev/null 2>&1 \
+    || die_json "--tags expects a JSON array of strings"
+  "$rmos" config set selection.tags "$tags" --json >/dev/null \
+    || die_json "could not write selection.tags"
+  applied_tags="$tags"
+fi
+
+failed=()
+for uuid in "${select[@]}";   do "$rmos" --batch select   "$uuid" >/dev/null 2>&1 || failed+=("select $uuid"); done
+for uuid in "${unselect[@]}"; do "$rmos" --batch unselect "$uuid" >/dev/null 2>&1 || failed+=("unselect $uuid"); done
+
+emit --argjson tags "$applied_tags" \
+     --argjson selected "$(printf '%s\n' "${select[@]:-}"   | jq -R . | jq -sc 'map(select(. != ""))')" \
+     --argjson unselected "$(printf '%s\n' "${unselect[@]:-}" | jq -R . | jq -sc 'map(select(. != ""))')" \
+     --argjson failed "$(printf '%s\n' "${failed[@]:-}" | jq -R . | jq -sc 'map(select(. != ""))')" \
+  '{ok: ($failed | length) == 0, tags: $tags, selected: $selected, unselected: $unselected, failed: $failed}'
