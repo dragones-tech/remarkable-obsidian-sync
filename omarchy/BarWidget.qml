@@ -261,8 +261,10 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     // fa-pencil. The bar should name what you just plugged in, not the file
-    // format it happens to store.
-    text: ""
+    // format it happens to store. Written as an escape: a literal glyph in
+    // source is one careless round trip away from becoming an empty string,
+    // which renders as a hole rather than an error.
+    text: "\uf040"
     // Pending notebooks are the only reason to act, so they are the only
     // thing that colours the icon.
     active: root.pendingCount > 0 || (root.pairKnown && !root.paired)
@@ -343,7 +345,7 @@ Panel {
 
               Text {
                 textFormat: Text.PlainText
-                text: ""
+                text: "\uf040"
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.icon
@@ -380,18 +382,18 @@ Panel {
               spacing: Style.space(6)
 
               HeaderButton {
-                glyph: ""
+                glyph: "\uf021"
                 shortcut: "s"
                 enabled: root.paired && !root.syncing
                 onActivated: root.syncNow()
               }
               HeaderButton {
-                glyph: ""
+                glyph: "\uf02c"
                 shortcut: "t"
                 onActivated: root.openPicker()
               }
               HeaderButton {
-                glyph: ""
+                glyph: "\uf07c"
                 shortcut: "o"
                 onActivated: root.openVault()
               }
@@ -601,7 +603,7 @@ Panel {
       Text {
         textFormat: Text.PlainText
         // A dot for something waiting, a check for what is already across.
-        text: notebookRow.broken ? "" : (notebookRow.waiting ? "" : "")
+        text: notebookRow.broken ? "\uf071" : (notebookRow.waiting ? "\uf111" : "\uf00c")
         color: notebookRow.broken ? root.urgent
              : (notebookRow.waiting ? root.foreground : root.dim)
         font.family: root.fontFamily

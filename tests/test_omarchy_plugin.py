@@ -8,6 +8,7 @@ tablet.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -368,3 +369,65 @@ def test_shellcheck_is_clean_when_available():
     targets = [str(s) for s in SCRIPTS] + [str(PLUGIN / "install.sh"), str(PLUGIN / "uninstall.sh")]
     result = subprocess.run(["shellcheck", "-s", "bash", *targets], text=True, capture_output=True)
     assert result.returncode == 0, result.stdout
+
+
+# --------------------------------------------------------------------------
+# Glyphs
+# --------------------------------------------------------------------------
+#
+# A literal Nerd Font character in source is one careless round trip away from
+# becoming an empty string, and an empty glyph renders as a hole rather than an
+# error - which is exactly how this was first noticed. Escapes cannot be lost
+# that way, and these tests stop a literal creeping back in.
+
+GLYPH_SLOT = re.compile(r'^\s*(?:text|glyph):\s*"((?:[^"\\]|\\.)*)"', re.MULTILINE)
+
+
+def qml_files():
+    return sorted(PLUGIN.glob("*.qml"))
+
+
+def test_no_glyph_slot_is_an_empty_string_where_an_icon_belongs():
+    for path in qml_files():
+        text = path.read_text(encoding="utf-8")
+        for line_number, line in enumerate(text.splitlines(), 1):
+            stripped = line.strip()
+            if stripped in ('text: ""', 'glyph: ""') and "property" not in stripped:
+                raise AssertionError(f"{path.name}:{line_number} has an empty glyph, which renders as a hole")
+
+
+def test_icons_are_written_as_escapes_not_literal_characters():
+    for path in qml_files():
+        for raw in GLYPH_SLOT.findall(path.read_text(encoding="utf-8")):
+            for char in raw:
+                assert not (0xE000 <= ord(char) <= 0xF8FF), (
+                    f"{path.name} carries a literal private-use glyph {hex(ord(char))}; "
+                    "write it as \\uXXXX so it cannot be silently lost"
+                )
+
+
+def test_every_icon_exists_in_the_font_the_bar_uses():
+    """A codepoint the font lacks renders as tofu or nothing at all."""
+    try:
+        from fontTools.ttLib import TTFont
+    except ImportError:
+        pytest.skip("fontTools not installed")
+
+    found = subprocess.run(["fc-match", "-f", "%{file}", "monospace"], text=True, capture_output=True)
+    if found.returncode != 0 or not found.stdout.strip():
+        pytest.skip("fontconfig could not resolve a monospace font")
+
+    font = TTFont(found.stdout.strip(), fontNumber=0)
+    covered = set()
+    for table in font["cmap"].tables:
+        covered |= set(table.cmap.keys())
+
+    used = set()
+    for path in qml_files():
+        for raw in GLYPH_SLOT.findall(path.read_text(encoding="utf-8")):
+            for match in re.finditer(r"\\u([0-9a-fA-F]{4})", raw):
+                used.add(int(match.group(1), 16))
+
+    assert used, "expected the widget to use at least one icon"
+    missing = sorted(cp for cp in used if cp not in covered)
+    assert not missing, f"font lacks: {[hex(c) for c in missing]}"
