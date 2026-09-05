@@ -9,6 +9,9 @@ description = "USB-first reMarkable to Obsidian sync client"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
 [project.scripts]
 rmos = "rmos.cli:main"
 
