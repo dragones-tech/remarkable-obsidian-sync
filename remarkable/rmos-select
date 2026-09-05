@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+STATE_DIR="${RMOS_STATE_DIR:-/home/root/.local/share/rmos}"
+SELECTED="$STATE_DIR/selected.txt"
+
+usage() {
+  echo "usage: rmos-select <uuid>" >&2
+  exit 2
+}
+
+[ "$#" -eq 1 ] || usage
+UUID="$1"
+
+case "$UUID" in
+  ????????-????-????-????-????????????) ;;
+  *) echo "invalid UUID: $UUID" >&2; exit 2 ;;
+esac
+
+mkdir -p "$STATE_DIR"
+touch "$SELECTED"
+
+if grep -Fxq "$UUID" "$SELECTED"; then
+  echo "already selected: $UUID"
+else
+  printf '%s\n' "$UUID" >> "$SELECTED"
+  echo "selected: $UUID"
+fi

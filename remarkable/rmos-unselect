@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+STATE_DIR="${RMOS_STATE_DIR:-/home/root/.local/share/rmos}"
+SELECTED="$STATE_DIR/selected.txt"
+
+[ "$#" -eq 1 ] || { echo "usage: rmos-unselect <uuid>" >&2; exit 2; }
+UUID="$1"
+[ -f "$SELECTED" ] || exit 0
+TMP="$STATE_DIR/selected.txt.tmp.$$"
+grep -Fvx "$UUID" "$SELECTED" > "$TMP" || true
+mv "$TMP" "$SELECTED"
+echo "unselected: $UUID"

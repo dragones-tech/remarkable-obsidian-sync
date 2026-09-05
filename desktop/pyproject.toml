@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rmos"
+version = "0.1.0"
+description = "USB-first reMarkable to Obsidian sync client"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+rmos = "rmos.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

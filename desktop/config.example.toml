@@ -1,0 +1,11 @@
+[remarkable]
+host = "10.11.99.1"
+user = "root"
+ssh_options = []
+
+[obsidian]
+vault = "/Users/you/Documents/Obsidian/MyVault"
+source = "Sources/reMarkable"
+
+[rmos]
+state = "~/.local/state/rmos/state.json"
