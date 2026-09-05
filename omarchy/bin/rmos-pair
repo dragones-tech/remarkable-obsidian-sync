@@ -16,6 +16,7 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 host=$(setting '.host' "10.11.99.1")
 user=$(setting '.user' "root")
 key="${RMOS_KEY:-$HOME/.ssh/rmos_remarkable}"
+timeout_s=$(setting '.connectTimeout' "6")
 ssh_config="${RMOS_SSH_CONFIG:-$HOME/.ssh/config}"
 target="$user@$host"
 
@@ -25,13 +26,37 @@ END_MARK="# <<< rmos (remarkable-sync) <<<"
 check_only=0
 [[ ${1:-} == --check ]] && check_only=1
 
-already_paired() {
-  ssh -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=accept-new \
-      -i "$key" "$target" 'echo rmos-ok' 2>/dev/null | grep -q rmos-ok
+# The question that matters is "will rmos connect", so this asks exactly the
+# way rmos does - no explicit -i. Testing with the key named on the command
+# line would report success while rmos itself still failed, because rmos finds
+# the key through ~/.ssh/config rather than being told about it.
+can_connect() {
+  ssh -o BatchMode=yes -o ConnectTimeout="$timeout_s" -o StrictHostKeyChecking=accept-new \
+      "$target" 'echo rmos-ok' 2>/dev/null | grep -q rmos-ok
+}
+
+# Whether the key itself is accepted, regardless of whether ssh would find it.
+key_accepted() {
+  [[ -f $key ]] && ssh -o BatchMode=yes -o ConnectTimeout="$timeout_s" -o StrictHostKeyChecking=accept-new \
+      -o IdentitiesOnly=yes -i "$key" "$target" 'echo rmos-ok' 2>/dev/null | grep -q rmos-ok
+}
+
+# Point ssh at the key for this host, so rmos needs no extra configuration.
+# Fenced so it can be removed again without disturbing anything around it.
+ensure_ssh_config() {
+  grep -qF "$BEGIN_MARK" "$ssh_config" 2>/dev/null && return 0
+  mkdir -p "$(dirname "$ssh_config")"
+  touch "$ssh_config"
+  chmod 600 "$ssh_config"
+  {
+    printf '\n%s\n' "$BEGIN_MARK"
+    printf 'Host %s\n    IdentityFile %s\n    IdentitiesOnly yes\n' "$host" "$key"
+    printf '%s\n' "$END_MARK"
+  } >>"$ssh_config"
 }
 
 if (( check_only )); then
-  if [[ -f $key ]] && already_paired; then
+  if can_connect; then
     emit --arg key "$key" '{paired: true, key: $key}'
   else
     emit --arg key "$key" '{paired: false, key: $key}'
@@ -39,9 +64,20 @@ if (( check_only )); then
   exit 0
 fi
 
-if [[ -f $key ]] && already_paired; then
+if can_connect; then
   emit --arg key "$key" '{ok: true, already: true, key: $key}'
   exit 0
+fi
+
+# The key is already on the tablet - someone ran ssh-copy-id by hand - but ssh
+# is not being told to use it. That needs no password, only the config block.
+if key_accepted; then
+  ensure_ssh_config
+  if can_connect; then
+    emit --arg key "$key" --arg cfg "$ssh_config" \
+      '{ok: true, already: false, adopted_existing_key: true, key: $key, ssh_config: $cfg}'
+    exit 0
+  fi
 fi
 
 IFS= read -r password || true
@@ -68,19 +104,9 @@ copy_output=$(
 
 unset password
 
-# Point ssh at the key for this host, so rmos needs no extra configuration.
-# Fenced so it can be removed again without disturbing anything around it.
-if ! grep -qF "$BEGIN_MARK" "$ssh_config" 2>/dev/null; then
-  touch "$ssh_config"
-  chmod 600 "$ssh_config"
-  {
-    printf '\n%s\n' "$BEGIN_MARK"
-    printf 'Host %s\n    IdentityFile %s\n    IdentitiesOnly yes\n' "$host" "$key"
-    printf '%s\n' "$END_MARK"
-  } >>"$ssh_config"
-fi
+ensure_ssh_config
 
-if already_paired; then
+if can_connect; then
   emit --arg key "$key" --arg cfg "$ssh_config" \
     '{ok: true, already: false, key: $key, ssh_config: $cfg}'
 else

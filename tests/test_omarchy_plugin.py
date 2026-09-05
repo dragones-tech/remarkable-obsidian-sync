@@ -38,9 +38,16 @@ def one_object(result):
 
 @pytest.fixture
 def plugin_config(tmp_path):
-    """A plugin config pointing at hardware that does not exist."""
+    """A plugin config pointing at hardware and a host that do not exist.
+
+    192.0.2.1 is TEST-NET-1, reserved and unroutable, so these tests behave the
+    same whether or not a real tablet happens to be plugged in.
+    """
     path = tmp_path / "remarkable-sync.json"
-    path.write_text(json.dumps({"vendor": "dead", "product": "beef"}), encoding="utf-8")
+    path.write_text(
+        json.dumps({"vendor": "dead", "product": "beef", "host": "192.0.2.1", "connectTimeout": 1}),
+        encoding="utf-8",
+    )
     return path
 
 
@@ -289,6 +296,33 @@ def test_pairing_without_a_password_says_where_to_find_it(tmp_path, plugin_confi
     payload = one_object(result)
     assert "error" in payload
     assert "Settings" in payload["error"], "tell the user where the password is"
+
+
+def test_the_check_asks_the_way_rmos_connects_not_with_an_explicit_key():
+    """A check that passes -i would report success while rmos still failed.
+
+    rmos finds the key through ~/.ssh/config; it never names one on the
+    command line. So the check has to connect the same way, or it lies.
+    """
+    text = (BIN / "rmos-pair").read_text(encoding="utf-8")
+    body = text[text.index("can_connect()"):text.index("key_accepted()")]
+    assert "-i " not in body, "can_connect must not name a key; that is not how rmos connects"
+    assert "$target" in body
+
+
+def test_an_existing_key_is_adopted_without_asking_for_a_password():
+    """Someone may have run ssh-copy-id by hand; that needs no password again."""
+    text = (BIN / "rmos-pair").read_text(encoding="utf-8")
+    adopt = text.index("if key_accepted; then")
+    prompt = text.index("read -r password")
+    assert adopt < prompt, "adopting an existing key must come before demanding a password"
+    assert "adopted_existing_key" in text
+
+
+def test_writing_the_ssh_config_block_is_idempotent():
+    text = (BIN / "rmos-pair").read_text(encoding="utf-8")
+    block = text[text.index("ensure_ssh_config() {"):text.index("if (( check_only ))")]
+    assert 'grep -qF "$BEGIN_MARK"' in block, "must not append the block twice"
 
 
 def test_pair_check_answers_without_a_password(tmp_path, plugin_config):

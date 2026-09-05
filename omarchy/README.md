@@ -8,8 +8,8 @@ It is a thin shell over [`rmos`](../README.md); all the sync logic lives there.
 
 ## Status
 
-Phase B: the manifest and the `bin/` scripts are done and tested. The QML
-entry points are placeholders — the bar widget and the picker come next.
+Phase C: the bar widget is written and installed. The picker (`Overlay.qml`)
+is still a placeholder — that is phase D.
 
 ## How it is put together
 
@@ -29,6 +29,20 @@ the widget can say what is wrong instead of showing nothing.
 | `rmos-pair` | Install an SSH key using the tablet's password | Once |
 | `rmos-unpair` | Revoke it | Once |
 | `rmos-open` | Open the synced folder in Obsidian | Cheap |
+
+## The bar widget
+
+The icon appears while the tablet is plugged in and is coloured only when
+there is something to act on: notebooks waiting to sync, or a tablet that is
+not paired yet. Left-click opens the popout, right-click syncs straight away —
+the plug in, sync, unplug loop is most of the use.
+
+In the popout: `s` sync, `t` choose what syncs, `o` open the vault, `r`
+refresh. Arrow keys move a cursor over the notebooks.
+
+The expensive call (`rmos-report`, an SSH round trip per selected notebook)
+runs when the tablet appears and when the popout opens — never on the poll
+timer, which only ever runs `rmos-probe`.
 
 `rmos-probe` is the one that matters for feel. The bar icon exists **only while
 the tablet is connected**, so it is polled on a timer — which is why it must
@@ -61,6 +75,12 @@ Host 10.11.99.1
 
 `bin/rmos-unpair` removes the key from the tablet and that block from your ssh
 config, leaving everything around it alone.
+
+`rmos-pair --check` asks the question that matters — *will rmos connect?* — by
+connecting the way rmos does, without naming a key. Testing with an explicit
+`-i` would report success while rmos itself still failed, because rmos finds
+the key through `~/.ssh/config`. If a key is already on the tablet but ssh is
+not being told to use it, pairing adopts it and needs no password.
 
 ## Configuration
 
