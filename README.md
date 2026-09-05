@@ -30,38 +30,84 @@ The MVP is intentionally one-way: reMarkable -> Obsidian.
 - `remarkable/` - tiny device-side scripts/state.
 - `desktop/` - desktop sync client.
 - `docs/` - architecture and implementation notes.
-- `tests/` - desktop-side tests.
-- `SPEC.md` - product/technical specification for Codex.
+- `tests/` - desktop-side and device-script tests.
+- `SPEC.md` - product/technical specification.
 
-## Quick start for development
+## Quick start
 
-Requires Python 3.11+ and OpenSSH on the desktop.
+Requires Python 3.11+, OpenSSH and `tar` on the desktop.
 
 ```bash
-cd desktop
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .
-rmos doctor
+make install
 ```
 
-Create a config file:
+Create a config file and point it at your vault:
 
 ```bash
-mkdir -p ~/.config/rmos
-cp config.example.toml ~/.config/rmos/config.toml
+rmos init-config --vault ~/Documents/Obsidian/MyVault
 ```
 
-Edit the vault path, connect the tablet by USB, then:
+Connect the tablet by USB, then:
 
 ```bash
-rmos list
-rmos sync --dry-run
-rmos sync
+rmos doctor          # check local tools, the tablet and the vault
+rmos list            # selected notebooks and their names
+rmos status          # which of them are new / changed / unchanged
+rmos sync --dry-run  # report what would change, transferring nothing
+rmos sync            # import into the vault
+```
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `rmos doctor` | Verifies local `ssh`/`tar`, tablet reachability, the xochitl directory, a remote checksum tool, the selection file, and that the vault is writable. Exits non-zero if a required check fails. |
+| `rmos list` | Prints the UUID and visible name of each selected notebook. |
+| `rmos status` | Shows per-notebook `new` / `changed` / `unchanged`, plus notebooks previously synced but no longer selected. |
+| `rmos sync` | Imports changed notebooks. `--dry-run` reports without transferring or writing. |
+| `rmos select <uuid>` | Marks a notebook from the desktop, without opening a shell on the tablet. |
+| `rmos unselect <uuid>` | Unmarks it. Existing vault notes are always kept. |
+| `rmos init-config` | Writes a starter `~/.config/rmos/config.toml`. |
+
+## How sync behaves
+
+- **Identity is the UUID, never the name.** Renaming a notebook on the tablet moves the existing vault folder and rewrites the note; it never creates a second copy.
+- **Two notebooks sharing a name get separate folders** — the second is suffixed with the first 8 characters of its UUID. Neither can overwrite the other, or a note you wrote by hand.
+- **Unchanged notebooks are never transferred.** Fingerprints are computed *on the tablet* (`sha256sum`, falling back to `md5sum`), so an unchanged notebook costs one checksum pass and no data transfer — `--dry-run` in particular downloads nothing.
+- **Transfers are verified.** The bundle is re-fingerprinted after arrival; if it changed mid-transfer because you were writing on the tablet, the sync fails for that notebook and the vault is left untouched.
+- **Nothing is ever deleted from the vault.** Unselecting or deleting a notebook on the tablet leaves the exported note in place. The only file rmos removes is a note it generated itself under a previous name, after a rename.
+- **One SSH connection per run.** Connections are multiplexed, so password authentication prompts once rather than once per file. Set `multiplex = false` in the config to disable.
+- **One failed notebook does not stop the rest.** Failures are reported per notebook and the command exits non-zero at the end.
+
+## Device-side install
+
+From a shell on the tablet:
+
+```sh
+./install.sh          # installs rmos-select / rmos-unselect, creates state dir
+./uninstall.sh        # removes the scripts, keeps the selection state
+```
+
+Neither script reads or writes anything under xochitl.
+
+## Development
+
+```bash
+make check   # ruff + pytest
+make test
+make lint
 ```
 
 ## Current status
 
-This repo is a safe scaffold, not a production-ready reMarkable modification. The initial client can discover marked UUIDs and pull their raw xochitl bundles. Rendering handwriting to PDF/PNG and the final xochitl UI button are explicitly staged as follow-up work.
+The desktop MVP is implemented and tested against the acceptance criteria in `SPEC.md`: incremental sync, rename identity, collision safety, non-destructive semantics, and a device that is read-only apart from our own state directory.
+
+Still staged as follow-up work:
+
+- Rendering handwriting to PDF/PNG (`SPEC.md` phase 2) — deliberately not implemented until a parser has been validated against the actual firmware's file format.
+- Automatic sync on USB attach (phase 2).
+- The on-device **Copy to Obsidian** UI action (phase 3). Until then, mark notebooks with `rmos select <uuid>` from the desktop or `rmos-select` on the tablet.
 
 See `SPEC.md` and `docs/ARCHITECTURE.md`.

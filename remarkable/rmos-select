@@ -1,24 +1,28 @@
 #!/bin/sh
+# Mark a notebook for export to Obsidian.
+#
+# Writes only to our own state directory. Nothing under xochitl is read or
+# modified, so this is safe to run while the tablet is in use.
 set -eu
 
 STATE_DIR="${RMOS_STATE_DIR:-/home/root/.local/share/rmos}"
 SELECTED="$STATE_DIR/selected.txt"
 
-usage() {
+if [ "$#" -ne 1 ]; then
   echo "usage: rmos-select <uuid>" >&2
   exit 2
-}
+fi
 
-[ "$#" -eq 1 ] || usage
-UUID="$1"
-
-case "$UUID" in
-  ????????-????-????-????-????????????) ;;
-  *) echo "invalid UUID: $UUID" >&2; exit 2 ;;
-esac
+UUID=$(printf '%s' "$1" | tr 'A-F' 'a-f')
+if ! printf '%s' "$UUID" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+  echo "invalid UUID: $1" >&2
+  exit 2
+fi
 
 mkdir -p "$STATE_DIR"
-touch "$SELECTED"
+if [ ! -f "$SELECTED" ]; then
+  printf '%s\n' '# UUIDs selected for Obsidian export' > "$SELECTED"
+fi
 
 if grep -Fxq "$UUID" "$SELECTED"; then
   echo "already selected: $UUID"

@@ -1,13 +1,24 @@
 #!/bin/sh
+# Unmark a notebook. Notes already exported to Obsidian are never touched.
 set -eu
 
 STATE_DIR="${RMOS_STATE_DIR:-/home/root/.local/share/rmos}"
 SELECTED="$STATE_DIR/selected.txt"
 
-[ "$#" -eq 1 ] || { echo "usage: rmos-unselect <uuid>" >&2; exit 2; }
-UUID="$1"
+if [ "$#" -ne 1 ]; then
+  echo "usage: rmos-unselect <uuid>" >&2
+  exit 2
+fi
+
+UUID=$(printf '%s' "$1" | tr 'A-F' 'a-f')
+if ! printf '%s' "$UUID" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+  echo "invalid UUID: $1" >&2
+  exit 2
+fi
+
 [ -f "$SELECTED" ] || exit 0
-TMP="$STATE_DIR/selected.txt.tmp.$$"
+
+TMP="$SELECTED.tmp.$$"
 grep -Fvx "$UUID" "$SELECTED" > "$TMP" || true
 mv "$TMP" "$SELECTED"
 echo "unselected: $UUID"
