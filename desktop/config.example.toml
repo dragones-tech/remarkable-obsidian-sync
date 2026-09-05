@@ -1,10 +1,14 @@
 [remarkable]
 host = "10.11.99.1"
 user = "root"
+# Extra flags passed to ssh, e.g. ["-i", "~/.ssh/remarkable"].
 ssh_options = []
+# Reuse one SSH connection for the whole run, so password auth prompts once.
+multiplex = true
+connect_timeout = 10
 
 [obsidian]
-vault = "/Users/you/Documents/Obsidian/MyVault"
+vault = "~/Documents/Obsidian/MyVault"
 source = "Sources/reMarkable"
 
 [rmos]
