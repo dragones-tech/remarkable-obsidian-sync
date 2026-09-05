@@ -15,20 +15,25 @@ handling and `rmos inspect` are implemented and tested. What remains needs a
 real device:
 
 1. Sync one real notebook, then run `rmos inspect` to learn which stroke
-   format the firmware writes.
+   format the firmware writes. On firmware `20260612085811` this reports
+   **v6** for every page, so a v5-only parser will not do.
 2. Pick a renderer that supports exactly that version and wire it up through
-   `[render] backend = "command"`.
+   `[render] backend = "command"`. Note that each page also has a
+   device-rendered PNG under `<uuid>.thumbnails/`, which is a zero-parser
+   fallback if thumbnail resolution is acceptable.
 3. Only if the command backend proves too limiting, add a native backend - and
    even then, validate it against sample data from that same firmware first. A
    parser built for the wrong version fails quietly.
 
-Also capture, for the record: firmware version, `uname -a`, `/etc/os-release`.
+Recorded so far: firmware `20260612085811`, `Codex Linux 5.7.126 (scarthgap)`,
+kernel `5.4.70-v1.6.3-rm10x armv7l`, USB gadget `04b3:4010`. `/bin/sh` is bash,
+and `tar`, `sha256sum`, `find` and `grep` are full coreutils, not busybox
+applets - so the remote shell snippets have more room than assumed.
 
-## Phase 2b - sync on USB attach
+## Phase 2b - sync on USB attach (done)
 
-> Add a udev rule plus a systemd `--user` unit that runs `rmos sync` when the
-> tablet's USB network interface appears. Must be safe to trigger repeatedly
-> and must not block if the tablet is unreachable.
+Implemented in `desktop/usb/`. The rendered rule and unit are checked by
+`udevadm verify` and `systemd-analyze verify` in the test suite.
 
 ## Phase 3 - on-device UI action
 

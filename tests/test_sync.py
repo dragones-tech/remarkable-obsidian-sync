@@ -83,7 +83,7 @@ def cfg(tmp_path):
 def run_sync(cfg, device, selected, monkeypatch, *, dry_run=False, re_render=False):
     monkeypatch.setattr(cli, "read_selection", lambda _ssh: list(selected))
     monkeypatch.setattr(cli, "Ssh", lambda *a, **k: FakeSsh())
-    args = argparse.Namespace(dry_run=dry_run, re_render=re_render, verbose=False)
+    args = argparse.Namespace(dry_run=dry_run, re_render=re_render, verbose=False, batch=False, wait=0)
     return cli.cmd_sync(cfg, args)
 
 
@@ -439,7 +439,7 @@ def test_a_misconfigured_renderer_fails_the_command_not_the_vault(cfg, device, m
     monkeypatch.setattr(cli, "read_selection", lambda _ssh: [UUID])
     monkeypatch.setattr(cli, "Ssh", lambda *a, **k: FakeSsh())
     with pytest.raises(cli.RmosError, match="Unknown"):
-        cli.cmd_sync(broken, argparse.Namespace(dry_run=False, re_render=False, verbose=False))
+        cli.cmd_sync(broken, argparse.Namespace(dry_run=False, re_render=False, verbose=False, batch=False, wait=0))
 
     assert list(cfg.vault_source.iterdir()) == []
 

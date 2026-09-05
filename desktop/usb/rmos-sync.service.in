@@ -1,0 +1,14 @@
+[Unit]
+Description=Sync selected reMarkable notebooks into Obsidian
+Documentation=file://@REPO@/README.md
+
+[Service]
+Type=oneshot
+# --batch: an attach-triggered run has no terminal, so ssh must fail rather
+#   than block on a password or host-key prompt nobody can answer.
+# --wait:  the USB network interface appears before the tablet's sshd is
+#   ready, so the first connection attempt would otherwise usually miss it.
+ExecStart=@RMOS@ --batch --wait @WAIT@ sync
+TimeoutStartSec=@TIMEOUT@
+Nice=10
+@NOTIFY@

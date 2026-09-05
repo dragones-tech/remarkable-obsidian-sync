@@ -21,4 +21,5 @@ jobs:
       - name: shellcheck device scripts
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck -s sh remarkable/rmos-select remarkable/rmos-unselect remarkable/install.sh remarkable/uninstall.sh
+          shellcheck -s sh remarkable/rmos-select remarkable/rmos-unselect remarkable/install.sh remarkable/uninstall.sh \
+            desktop/usb/install-usb-sync.sh desktop/usb/uninstall-usb-sync.sh

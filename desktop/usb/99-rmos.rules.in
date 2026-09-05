@@ -1,0 +1,7 @@
+# Start the user's rmos sync when the reMarkable's USB network gadget appears.
+#
+# SYSTEMD_USER_WANTS is read by user service manager instances, so the sync
+# runs as the desktop user with their config, vault and SSH keys - not as root.
+# Network devices already carry the "systemd" tag; it is repeated here so the
+# rule stays correct if that default ever changes.
+ACTION=="add", SUBSYSTEM=="net", ATTRS{idVendor}=="@VENDOR@", ATTRS{idProduct}=="@PRODUCT@", TAG+="systemd", ENV{SYSTEMD_USER_WANTS}+="rmos-sync.service"

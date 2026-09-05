@@ -72,6 +72,8 @@ rmos sync            # import into the vault
 | `rmos unselect <uuid>` | Unmarks it. Existing vault notes are always kept. |
 | `rmos init-config` | Writes a starter `~/.config/rmos/config.toml`. |
 
+Global flags: `--config`, `-v/--verbose`, `--batch` (never prompt — required for unattended runs) and `--wait SECONDS` (wait for the tablet to answer before giving up).
+
 ## How sync behaves
 
 - **Identity is the UUID, never the name.** Renaming a notebook on the tablet moves the existing vault folder and rewrites the note; it never creates a second copy.
@@ -98,14 +100,14 @@ Project Alpha  (550e8400-e29b-41d4-a716-446655440000)
   type:       notebook
   pages:      12
   .rm files:  12
-  format:     v5 (12 files)
+  format:     v6 (12 files)
   size:       24.0 KiB
 
 Summary
-  v5: 12 file(s)
+  v6: 12 file(s)
 
-Your firmware writes v5 stroke data.
-Choose a renderer that supports v5, then set [render] in your config.
+Your firmware writes v6 stroke data.
+Choose a renderer that supports v6, then set [render] in your config.
 ```
 
 Then point the `command` backend at a tool that supports that version:
@@ -126,6 +128,41 @@ Behaviour worth knowing:
 - Enabling, disabling or changing the renderer re-renders **without re-downloading** anything. Only the rendering was stale, and the bundle is already local.
 - A renderer that fails is not fatal: the raw bundle is still imported, you get a warning, and the failure is recorded so the next sync does not silently retry a broken command. Change the config, or pass `--re-render`, to try again.
 - Attachments rmos produced are renamed along with the notebook. Nothing else in `attachments/` is ever touched.
+
+## Sync automatically on USB attach
+
+A udev rule starts a systemd **user** service when the tablet's USB network gadget appears. It runs as you, with your config, vault and SSH keys — not as root.
+
+**Prerequisite: key authentication.** An attach-triggered run has no terminal, so it cannot answer a password prompt. Set it up once:
+
+```bash
+ssh-copy-id root@10.11.99.1     # password is in Settings -> Help -> About
+rmos doctor                     # the "unattended-ready" check must pass
+```
+
+Then, with the tablet connected so its USB IDs can be detected:
+
+```bash
+./desktop/usb/install-usb-sync.sh --dry-run   # see exactly what would be installed
+./desktop/usb/install-usb-sync.sh --notify    # install (asks for sudo for the udev rule)
+```
+
+Run it as your normal user, not with sudo — the script escalates only for the udev rule. Running the whole thing as root would put the user unit in root's home, where your service manager never looks.
+
+Options: `--wait` (how long to wait for the tablet after attach, default 45s), `--timeout`, `--notify` (desktop notification when a sync finishes), `--vendor`/`--product` (skip detection), `--rmos` (path to the executable).
+
+Check on it:
+
+```bash
+systemctl --user status rmos-sync.service
+journalctl --user -u rmos-sync.service -n 50
+./desktop/usb/uninstall-usb-sync.sh
+```
+
+Two details worth knowing:
+
+- The USB interface appears **before** the tablet's sshd accepts connections, so the service retries with backoff for `--wait` seconds rather than connecting once and missing it.
+- `SYSTEMD_USER_WANTS` activates the unit in every running user manager instance. On a single-user desktop that is what you want; on a shared machine, every logged-in user with the unit installed would sync.
 
 ## Device-side install
 
@@ -152,9 +189,10 @@ The desktop MVP is implemented and tested against the acceptance criteria in `SP
 
 Rendering (`SPEC.md` phase 2) is wired end to end behind a pluggable backend, with `rmos inspect` to identify which stroke format your firmware writes. No parser ships with rmos — see [Rendering](#rendering).
 
+Verified end to end against a reMarkable running firmware `20260612085811` (Codex Linux, kernel 5.4.70 armv7l): `doctor`, `select`, `list`, `status`, `sync --dry-run`, `sync`, incremental re-sync, non-destructive `unselect`, and an unattended run driven by systemd. That device writes **v6** stroke data.
+
 Still staged as follow-up work:
 
-- Automatic sync on USB attach (phase 2).
 - The on-device **Copy to Obsidian** UI action (phase 3). Until then, mark notebooks with `rmos select <uuid>` from the desktop or `rmos-select` on the tablet.
 
 See `SPEC.md` and `docs/ARCHITECTURE.md`.

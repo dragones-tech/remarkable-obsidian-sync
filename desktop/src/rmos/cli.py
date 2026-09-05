@@ -7,12 +7,14 @@ The device is treated as read-only except for our own state directory under
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -152,9 +154,12 @@ backend = "none"
 class Ssh:
     """Runs commands on the tablet over one multiplexed SSH connection."""
 
-    def __init__(self, cfg: Config, *, verbose: bool = False) -> None:
+    def __init__(self, cfg: Config, *, verbose: bool = False, batch: bool = False) -> None:
         self.cfg = cfg
         self.verbose = verbose
+        # Unattended runs have no terminal, so ssh must fail rather than block
+        # on a password or host-key prompt nobody can answer.
+        self.batch = batch
         self._control_path: str | None = None
         self._hash_algo: str | None = None
 
@@ -173,13 +178,37 @@ class Ssh:
         ]
 
     def args(self) -> list[str]:
+        batch = ["-o", "BatchMode=yes"] if self.batch else []
         return [
             "ssh",
             "-o", f"ConnectTimeout={self.cfg.connect_timeout}",
+            *batch,
             *self._control_args(),
             *self.cfg.ssh_options,
             self.cfg.remote,
         ]
+
+    def reachable(self) -> bool:
+        cp = self.run("echo rmos-ok", check=False)
+        return cp.returncode == 0 and "rmos-ok" in cp.stdout
+
+    def wait_for_device(self, seconds: int) -> None:
+        """Block until the tablet answers, or give up after `seconds`.
+
+        A USB network interface appears before the tablet's sshd is ready to
+        accept connections, so an attach-triggered sync that connects once
+        would usually just miss it.
+        """
+        deadline = time.monotonic() + seconds
+        delay = 1.0
+        while True:
+            if self.reachable():
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RmosError(f"Tablet not reachable at {self.cfg.remote} after {seconds}s.")
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2, 5.0)
 
     def run(self, script: str, *, check: bool = True) -> subprocess.CompletedProcess[str]:
         argv = [*self.args(), script]
@@ -207,6 +236,14 @@ class Ssh:
                 raise RmosError("Neither sha256sum nor md5sum is available on the tablet.")
             self._hash_algo = found
         return self._hash_algo
+
+
+def make_ssh(cfg: Config, args: argparse.Namespace) -> Ssh:
+    ssh = Ssh(cfg, verbose=args.verbose, batch=args.batch)
+    wait = getattr(args, "wait", 0)
+    if wait:
+        ssh.wait_for_device(wait)
+    return ssh
 
 
 def _ssh_failure(cp: subprocess.CompletedProcess[str]) -> str:
@@ -354,7 +391,7 @@ def _writable_ancestor(path: Path) -> Path:
 
 
 def cmd_doctor(cfg: Config, args: argparse.Namespace) -> int:
-    ssh = Ssh(cfg, verbose=args.verbose)
+    ssh = Ssh(cfg, verbose=args.verbose, batch=args.batch)
     checks: list[Check] = []
 
     for tool in ("ssh", "tar"):
@@ -395,6 +432,22 @@ def cmd_doctor(cfg: Config, args: argparse.Namespace) -> int:
             )
         )
 
+    if reachable:
+        # Must bypass the multiplexed socket: it is already authenticated, so
+        # reusing it would report key auth as working when it is not.
+        probe = Ssh(dataclasses.replace(cfg, multiplex=False), verbose=args.verbose, batch=True)
+        unattended = probe.reachable()
+        checks.append(
+            Check(
+                "unattended-ready",
+                unattended,
+                "key authentication works"
+                if unattended
+                else f"ssh needs a password; run `ssh-copy-id {cfg.remote}` to enable sync on USB attach",
+                fatal=False,
+            )
+        )
+
     try:
         renderer = build_configured_renderer(cfg)
         detail = renderer.name
@@ -428,7 +481,7 @@ def cmd_doctor(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_list(cfg: Config, args: argparse.Namespace) -> int:
-    ssh = Ssh(cfg, verbose=args.verbose)
+    ssh = make_ssh(cfg, args)
     uuids = read_selection(ssh)
     if not uuids:
         print("No notebooks selected.")
@@ -445,7 +498,7 @@ def cmd_list(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
-    ssh = Ssh(cfg, verbose=args.verbose)
+    ssh = make_ssh(cfg, args)
     state = load_state(cfg.state)
     docs = state["documents"]
     uuids = read_selection(ssh)
@@ -605,7 +658,7 @@ def _sync_one(
 
 
 def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
-    ssh = Ssh(cfg, verbose=args.verbose)
+    ssh = make_ssh(cfg, args)
     renderer = build_configured_renderer(cfg)
     state = load_state(cfg.state)
     docs = state["documents"]
@@ -722,7 +775,7 @@ def cmd_inspect(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_select(cfg: Config, args: argparse.Namespace) -> int:
-    ssh = Ssh(cfg, verbose=args.verbose)
+    ssh = make_ssh(cfg, args)
     uuid = validate_uuid(args.uuid)
     script = (
         "set -eu\n"
@@ -737,7 +790,7 @@ def cmd_select(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_unselect(cfg: Config, args: argparse.Namespace) -> int:
-    ssh = Ssh(cfg, verbose=args.verbose)
+    ssh = make_ssh(cfg, args)
     uuid = validate_uuid(args.uuid)
     script = (
         "set -eu\n"
@@ -780,6 +833,18 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="rmos", description=__doc__.splitlines()[0])
     p.add_argument("--config", type=Path, help=f"config file (default: {DEFAULT_CONFIG_PATH})")
     p.add_argument("-v", "--verbose", action="store_true", help="log remote commands to stderr")
+    p.add_argument(
+        "--batch",
+        action="store_true",
+        help="never prompt; fail instead. Required for unattended runs, which have no terminal",
+    )
+    p.add_argument(
+        "--wait",
+        type=int,
+        default=0,
+        metavar="SECONDS",
+        help="wait up to SECONDS for the tablet to answer before giving up",
+    )
     sub = p.add_subparsers(dest="command", required=True)
 
     sub.add_parser("doctor", help="check the local tools, the tablet and the vault")
