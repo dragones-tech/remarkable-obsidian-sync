@@ -117,10 +117,16 @@ A notebook that has already been synced carries an open icon on its right,
 which opens the note in Obsidian. It sits above the row's own click target, so
 opening a note never doubles as ticking it.
 
-`Enter` saves and closes. `Ctrl+Enter` saves and then syncs, staying open so
-you can watch the result and open what just arrived — the catalogue is re-read
-afterwards, so notebooks that were just imported gain their open icon. `/`
-filters, `Esc` cancels.
+Notebooks you already sync are listed first, so you are not hunting for three
+rows among seventy. The order is fixed when the catalogue loads rather than
+following your ticks — otherwise rows would jump out from under the pointer as
+you clicked them. A separator marks where they end.
+
+Every action has a button as well as a key: save, save and sync, close. The
+shortcut slides out of the button on hover rather than sitting in a tooltip
+over the row beneath. `Enter` saves and closes, `Ctrl+Enter` saves and then
+syncs — staying open so you can watch the result and open what just arrived,
+since the catalogue is re-read afterwards. `/` filters, `Esc` cancels.
 
 ## Configuration
 

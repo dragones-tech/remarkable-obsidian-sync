@@ -55,6 +55,9 @@ Item {
   property var originalDocs: ({})
 
   property string filterText: ""
+  // How many rows were already chosen when the catalogue arrived. Ticking
+  // does not change it, so nothing reorders under the pointer mid-click.
+  property int chosenAtLoad: 0
 
   readonly property color background: Color.menu.background
   readonly property color foreground: Color.menu.text
@@ -161,7 +164,18 @@ Item {
   }
 
   function applyCatalogue(data) {
-    root.documents = data.documents || []
+    // What you already sync goes first: with 71 notebooks, hunting for the
+    // three you chose is the whole difficulty. Ordered once, on arrival - if
+    // this followed the live ticks, rows would jump as you clicked them.
+    var incoming = data.documents || []
+    var chosen = []
+    var rest = []
+    for (var i = 0; i < incoming.length; i++) {
+      if (incoming[i].selected === true) chosen.push(incoming[i])
+      else rest.push(incoming[i])
+    }
+    root.chosenAtLoad = chosen.length
+    root.documents = chosen.concat(rest)
     root.tagCounts = data.tags || []
 
     var tags = ({})
@@ -551,9 +565,25 @@ Item {
 
                 Repeater {
                   model: root.visibleDocuments
-                  delegate: DocumentRow {
+                  delegate: Column {
                     width: docColumn.width
-                    document: modelData
+                    spacing: Style.space(1)
+
+                    DocumentRow {
+                      width: parent.width
+                      document: modelData
+                    }
+
+                    // Where what you already sync ends and the other sixty
+                    // begin. Hidden while filtering, when the count no longer
+                    // describes what is on screen.
+                    PanelSeparator {
+                      width: parent.width
+                      visible: root.filterText === ""
+                        && root.chosenAtLoad > 0
+                        && index === root.chosenAtLoad - 1
+                        && root.visibleDocuments.length > root.chosenAtLoad
+                    }
                   }
                 }
               }
@@ -573,15 +603,52 @@ Item {
             font.pixelSize: Style.font.caption
           }
 
-          Text {
+          RowLayout {
             Layout.fillWidth: true
-            textFormat: Text.PlainText
-            text: root.view === "pair"
-              ? "Enter pair · Esc cancel"
-              : "Enter save · Ctrl+Enter sync · / filter · Esc cancel"
-            color: Qt.darker(root.dim, 1.2)
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
+            spacing: Style.space(6)
+
+            Text {
+              Layout.fillWidth: true
+              textFormat: Text.PlainText
+              text: root.view === "pair" ? "esc cancel" : "/ filter · esc cancel"
+              color: Qt.darker(root.dim, 1.2)
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            ActionButton {
+              visible: root.view === "pair"
+              glyph: "\uf084"
+              label: "pair"
+              shortcut: "enter"
+              enabled: !root.pairing
+              onActivated: root.pair()
+            }
+
+            ActionButton {
+              visible: root.view === "picker"
+              glyph: "\uf021"
+              label: root.dirty ? "save and sync" : "sync"
+              shortcut: "^enter"
+              enabled: !root.applying && !root.syncing
+              onActivated: root.saveAndSync()
+            }
+
+            ActionButton {
+              visible: root.view === "picker"
+              glyph: "\uf00c"
+              label: "save"
+              shortcut: "enter"
+              enabled: !root.applying && !root.syncing
+              onActivated: root.apply()
+            }
+
+            ActionButton {
+              glyph: "\uf00d"
+              label: "close"
+              shortcut: "esc"
+              onActivated: root.dismiss()
+            }
           }
         }
       }
@@ -589,6 +656,88 @@ Item {
   }
 
   // ---------------------------------------------------------- components
+
+  component ActionButton: Rectangle {
+    id: actionButton
+
+    property string glyph: ""
+    property string label: ""
+    property string shortcut: ""
+    property bool enabled: true
+    property color tint: root.foreground
+
+    signal activated()
+
+    readonly property bool hot: actionButton.enabled && actionHover.containsMouse
+
+    radius: root.cornerRadius
+    opacity: actionButton.enabled ? 1.0 : 0.38
+    implicitWidth: actionContent.implicitWidth + Style.space(14)
+    implicitHeight: actionContent.implicitHeight + Style.space(8)
+    color: actionButton.hot ? Qt.rgba(tint.r, tint.g, tint.b, 0.14) : "transparent"
+    border.width: 1
+    border.color: actionButton.hot
+      ? Qt.rgba(tint.r, tint.g, tint.b, 0.5)
+      : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16)
+
+    Behavior on color { ColorAnimation { duration: 90 } }
+
+    Row {
+      id: actionContent
+      anchors.centerIn: parent
+      spacing: Style.space(6)
+
+      Text {
+        textFormat: Text.PlainText
+        text: actionButton.glyph
+        color: actionButton.hot ? actionButton.tint : Qt.darker(actionButton.tint, 1.2)
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.icon
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        text: actionButton.label
+        color: actionButton.hot ? root.foreground : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      // The shortcut slides out on hover rather than sitting in a tooltip
+      // that would cover the row underneath.
+      Item {
+        width: actionButton.hot && actionButton.shortcut ? shortcutLabel.implicitWidth + Style.space(4) : 0
+        height: shortcutLabel.implicitHeight
+        clip: true
+        opacity: actionButton.hot ? 1 : 0
+        anchors.verticalCenter: parent.verticalCenter
+
+        Behavior on width { NumberAnimation { duration: 130; easing.type: Easing.OutCubic } }
+        Behavior on opacity { NumberAnimation { duration: 130 } }
+
+        Text {
+          id: shortcutLabel
+          textFormat: Text.PlainText
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          text: actionButton.shortcut
+          color: Qt.darker(root.dim, 1.2)
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+      }
+    }
+
+    MouseArea {
+      id: actionHover
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: actionButton.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+      onClicked: if (actionButton.enabled) actionButton.activated()
+    }
+  }
 
   component Chip: Rectangle {
     id: chip
