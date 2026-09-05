@@ -71,9 +71,13 @@ rmos sync            # import into the vault
 | `rmos inspect` | Reports the `.rm` stroke format of synced notebooks. Reads the local vault only — no tablet needed. |
 | `rmos select <uuid>` | Marks a notebook from the desktop, without opening a shell on the tablet. |
 | `rmos unselect <uuid>` | Unmarks it. Existing vault notes are always kept. |
+| `rmos index` | Lists every notebook with its folder, tags and selection state. |
+| `rmos config get/set/unset` | Reads and writes one setting. |
 | `rmos init-config` | Writes a starter `~/.config/rmos/config.toml`. |
 
-Global flags: `--config`, `-v/--verbose`, `--batch` (never prompt — required for unattended runs) and `--wait SECONDS` (wait for the tablet to answer before giving up).
+Global flags: `--config`, `-v/--verbose`, `--json`, `--batch` (never prompt — required for unattended runs) and `--wait SECONDS` (wait for the tablet to answer before giving up). They are accepted before or after the subcommand, so both `rmos --json sync` and `rmos sync --json` work.
+
+`--json` makes a command emit exactly one JSON object and nothing else, which is what the Omarchy plugin parses.
 
 ## Marking a notebook for export
 
@@ -89,12 +93,29 @@ The tag rmos looks for is configurable, and `selected.txt` still works as a seco
 ```toml
 [selection]
 sources = ["file", "tag"]   # both are read; the result is the union
-tag = "obsidian"
+tags = ["obsidian", "sync"] # any of these selects a notebook
 ```
+
+The older singular `tag = "obsidian"` is still accepted.
 
 Matching ignores case and surrounding whitespace. Deleted and trashed notebooks are skipped. Set `sources = ["tag"]` to use tagging alone — the `file` source is the only one that costs a round trip when unused, and the `tag` source reads the tablet's document index (a few MB), so dropping either saves a little work.
 
 If a notebook carries tags in an encoding rmos cannot decode, it says so loudly rather than quietly selecting nothing.
+
+## Configuration
+
+Two files:
+
+- **`~/.config/rmos/config.toml`** is yours. It carries the comments explaining every option, and rmos never rewrites it.
+- **`~/.config/rmos/config.local.toml`** is written by `rmos config set` — that is how the Omarchy plugin persists what you pick in its UI. It is machine-owned and overrides the file above.
+
+```bash
+rmos config get selection.tags
+rmos config set selection.tags '["obsidian","sync"]'
+rmos config unset selection.tags     # fall back to config.toml
+```
+
+Only settings that cannot launch a process are writable this way. The render command and `ssh_options` stay hand-edited, so a bug in a UI can never turn into command execution.
 
 ## How sync behaves
 

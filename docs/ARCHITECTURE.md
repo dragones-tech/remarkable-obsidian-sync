@@ -172,6 +172,27 @@ retried on every sync. Changing the configuration, or `--re-render`, retries.
 version, which is the evidence needed to pick a parser. It reports an
 unrecognised header as unknown rather than guessing.
 
+## Machine-readable output
+
+Every command takes `--json` and then emits exactly one JSON object on stdout,
+with nothing else. That is the contract the Omarchy plugin is built on: it runs
+these as subprocesses and parses stdout, so a stray progress line would break
+it. Human-facing text and the JSON payload are rendered from the same
+structure, which is why the two cannot drift.
+
+`rmos index` exists for that plugin: one row per notebook with its folder,
+tags, whether it is selected and by which source.
+
+## Configuration layering
+
+`config.toml` is hand-written and never rewritten - a machine that reformats a
+commented file eventually eats the comments. `config.local.toml` is written by
+`rmos config set` and overrides it, one table deep.
+
+Only keys that cannot start a process are settable. The render command and
+`ssh_options` are deliberately excluded, so a bug in a UI cannot become command
+execution.
+
 ## Desktop state
 
 Default:

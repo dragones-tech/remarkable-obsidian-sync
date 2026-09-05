@@ -15,8 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
-import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -27,6 +26,7 @@ from .core import (
     find_symlinks,
     fingerprint_entries,
     fingerprint_tree,
+    folder_path,
     notebook_from_metadata,
     parse_hash_listing,
     parse_metadata,
@@ -35,20 +35,27 @@ from .core import (
     prune_stale_notes,
     render_markdown,
     replace_tree,
-    select_by_tag,
+    select_by_tags,
     tag_census,
     unreadable_tag_documents,
     validate_uuid,
     write_text_atomic,
 )
 from .render import BundleReport, CommandRenderer, Renderer, RenderError, build_renderer, inspect_bundle
+from .settings import (
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_STATE_PATH,
+    Config,
+    ConfigError,
+    load_config,
+    read_setting,
+    unset_setting,
+    write_setting,
+)
 
 REMOTE_XOCHITL = "/home/root/.local/share/remarkable/xochitl"
 REMOTE_STATE_DIR = "/home/root/.local/share/rmos"
 REMOTE_SELECTED = f"{REMOTE_STATE_DIR}/selected.txt"
-
-DEFAULT_CONFIG_PATH = Path("~/.config/rmos/config.toml")
-DEFAULT_STATE_PATH = "~/.local/state/rmos/state.json"
 
 # Exit codes used by the remote shell snippets, so failures are diagnosable.
 RC_NO_XOCHITL = 3
@@ -59,65 +66,6 @@ HASH_COMMANDS = {"sha256": "sha256sum", "md5": "md5sum"}
 
 class RmosError(RuntimeError):
     """A failure we can explain to the user without a traceback."""
-
-
-# --------------------------------------------------------------------------
-# Configuration
-# --------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Config:
-    host: str = "10.11.99.1"
-    user: str = "root"
-    ssh_options: list[str] = field(default_factory=list)
-    multiplex: bool = True
-    connect_timeout: int = 10
-    vault: Path = Path()
-    source: str = "Sources/reMarkable"
-    state: Path = field(default_factory=lambda: Path(DEFAULT_STATE_PATH).expanduser())
-    render: dict = field(default_factory=dict)
-    selection_sources: tuple[str, ...] = ("file", "tag")
-    selection_tag: str = "obsidian"
-
-    @property
-    def remote(self) -> str:
-        return f"{self.user}@{self.host}"
-
-    @property
-    def vault_source(self) -> Path:
-        return self.vault / self.source
-
-
-def load_config(path: Path | None) -> Config:
-    path = (path or DEFAULT_CONFIG_PATH).expanduser()
-    if not path.exists():
-        raise RmosError(f"No config at {path}. Run `rmos init-config` to create one.")
-    with path.open("rb") as f:
-        raw = tomllib.load(f)
-
-    rm = raw.get("remarkable", {})
-    ob = raw.get("obsidian", {})
-    st = raw.get("rmos", {})
-    sel = raw.get("selection", {})
-
-    vault = ob.get("vault")
-    if not vault:
-        raise RmosError(f"{path}: [obsidian] vault is required.")
-
-    return Config(
-        host=rm.get("host", "10.11.99.1"),
-        user=rm.get("user", "root"),
-        ssh_options=list(rm.get("ssh_options", [])),
-        multiplex=bool(rm.get("multiplex", True)),
-        connect_timeout=int(rm.get("connect_timeout", 10)),
-        vault=Path(vault).expanduser(),
-        source=ob.get("source", "Sources/reMarkable"),
-        state=Path(st.get("state", DEFAULT_STATE_PATH)).expanduser(),
-        render=dict(raw.get("render", {})),
-        selection_sources=tuple(sel.get("sources", ["file", "tag"])),
-        selection_tag=str(sel.get("tag", "obsidian")),
-    )
 
 
 def build_configured_renderer(cfg: Config) -> Renderer:
@@ -152,7 +100,7 @@ state = "{state}"
 # Both are read, and the result is the union.
 [selection]
 sources = ["file", "tag"]
-tag = "obsidian"
+tags = ["obsidian"]
 
 # Rendering is off until you have confirmed which stroke format your firmware
 # writes. Run `rmos inspect` after a sync to find out, then point `command` at
@@ -457,7 +405,7 @@ def read_selection(ssh: Ssh, cfg: Config) -> list[str]:
         else:
             index = read_index(ssh)
             _warn_unreadable_tags(index)
-            uuids = select_by_tag(index, cfg.selection_tag)
+            uuids = select_by_tags(index, cfg.selection_tags)
         for uuid in uuids:
             if uuid not in seen:
                 seen.add(uuid)
@@ -476,6 +424,18 @@ class Check:
     ok: bool
     detail: str = ""
     fatal: bool = True
+
+
+def emit(args: argparse.Namespace, payload: dict, render) -> None:
+    """Print one result, as JSON for callers or as text for people.
+
+    The Omarchy plugin parses stdout, so JSON mode must emit exactly one
+    object and nothing else; every human-facing line goes through `render`.
+    """
+    if getattr(args, "json", False):
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        render(payload)
 
 
 def _writable_ancestor(path: Path) -> Path:
@@ -561,17 +521,22 @@ def cmd_doctor(cfg: Config, args: argparse.Namespace) -> int:
         writable = os.access(anchor, os.W_OK)
         checks.append(Check("vault writable", writable, str(cfg.vault_source)))
 
-    failed = 0
-    for check in checks:
-        if check.ok:
-            mark = "ok  "
-        elif check.fatal:
-            mark = "FAIL"
-            failed += 1
-        else:
-            mark = "warn"
-        suffix = f"  ({check.detail})" if check.detail else ""
-        print(f"[{mark}] {check.name}{suffix}")
+    failed = sum(1 for c in checks if not c.ok and c.fatal)
+    payload = {
+        "ok": failed == 0,
+        "remote": cfg.remote,
+        "checks": [
+            {"name": c.name, "ok": c.ok, "detail": c.detail, "required": c.fatal} for c in checks
+        ],
+    }
+
+    def as_text(data):
+        for check in checks:
+            mark = "ok  " if check.ok else ("FAIL" if check.fatal else "warn")
+            suffix = f"  ({check.detail})" if check.detail else ""
+            print(f"[{mark}] {check.name}{suffix}")
+
+    emit(args, payload, as_text)
     return 1 if failed else 0
 
 
@@ -598,14 +563,7 @@ def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     docs = state["documents"]
     uuids = read_selection(ssh, cfg)
 
-    print(f"remote:      {cfg.remote}")
-    print(f"vault:       {cfg.vault_source}")
-    print(f"state:       {cfg.state}")
-    print(f"selected:    {len(uuids)}")
-    print(f"tracked:     {len(docs)}")
-    if uuids:
-        print()
-
+    notebooks = []
     failed = 0
     for uuid in uuids:
         entry = docs.get(uuid, {})
@@ -613,17 +571,47 @@ def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
             nb = notebook_from_metadata(uuid, remote_metadata(ssh, uuid))
             fingerprint, _ = remote_fingerprint(ssh, uuid)
             status = "unchanged" if entry.get("fingerprint") == fingerprint else ("new" if not entry else "changed")
-            print(f"{status:<10} {nb.visible_name}  ({uuid})")
+            notebooks.append({"uuid": uuid, "name": nb.visible_name, "status": status})
         except (RmosError, ValueError) as exc:
-            print(f"{'error':<10} {uuid}  ({exc})", file=sys.stderr)
+            notebooks.append({"uuid": uuid, "name": entry.get("visible_name", uuid),
+                              "status": "error", "error": str(exc)})
             failed += 1
 
-    untracked = [u for u in docs if u not in uuids]
-    if untracked:
-        print()
-        print(f"{len(untracked)} notebook(s) previously synced but no longer selected (kept in the vault):")
-        for uuid in untracked:
-            print(f"  {docs[uuid].get('visible_name', uuid)}  ({uuid})")
+    untracked = [
+        {"uuid": u, "name": docs[u].get("visible_name", u)} for u in docs if u not in uuids
+    ]
+    payload = {
+        "remote": cfg.remote,
+        "vault": str(cfg.vault_source),
+        "state": str(cfg.state),
+        "selected": len(uuids),
+        "tracked": len(docs),
+        "pending": sum(1 for n in notebooks if n["status"] in ("new", "changed")),
+        "failed": failed,
+        "notebooks": notebooks,
+        "no_longer_selected": untracked,
+    }
+
+    def as_text(data):
+        print(f"remote:      {data['remote']}")
+        print(f"vault:       {data['vault']}")
+        print(f"state:       {data['state']}")
+        print(f"selected:    {data['selected']}")
+        print(f"tracked:     {data['tracked']}")
+        if data["notebooks"]:
+            print()
+        for nb in data["notebooks"]:
+            stream = sys.stderr if nb["status"] == "error" else sys.stdout
+            detail = f"  ({nb['error']})" if nb.get("error") else f"  ({nb['uuid']})"
+            print(f"{nb['status']:<10} {nb['name']}{detail}", file=stream)
+        if data["no_longer_selected"]:
+            print()
+            print(f"{len(data['no_longer_selected'])} notebook(s) previously synced "
+                  "but no longer selected (kept in the vault):")
+            for nb in data["no_longer_selected"]:
+                print(f"  {nb['name']}  ({nb['uuid']})")
+
+    emit(args, payload, as_text)
     return 1 if failed else 0
 
 
@@ -632,6 +620,7 @@ def _render_attachment(
     dest: Path,
     nb: Notebook,
     previous_attachment: str | None,
+    removed: list[str] | None = None,
 ) -> tuple[str | None, str]:
     """Render the notebook, returning (attachment filename, state marker).
 
@@ -642,6 +631,7 @@ def _render_attachment(
     attachments = dest / "attachments"
     produced: Path | None = None
     marker = renderer.signature
+    removed = [] if removed is None else removed
 
     try:
         produced = renderer.render(
@@ -665,7 +655,7 @@ def _render_attachment(
         stale = attachments / previous_attachment
         if stale.is_file():
             stale.unlink()
-            print(f"           removed stale attachment {stale.name}")
+            removed.append(stale.name)
     return produced.name, marker
 
 
@@ -678,8 +668,14 @@ def _sync_one(
     *,
     dry_run: bool,
     re_render: bool = False,
+    outcome: dict | None = None,
 ) -> bool:
-    """Sync one notebook. Returns True when the vault was modified."""
+    """Sync one notebook. Returns True when the vault was modified.
+
+    Progress is recorded into `outcome` rather than printed, so the caller
+    decides whether it becomes a line of text or a field of JSON.
+    """
+    outcome = {} if outcome is None else outcome
     nb: Notebook = notebook_from_metadata(uuid, remote_metadata(ssh, uuid))
     fingerprint, _ = remote_fingerprint(ssh, uuid)
     previous = docs.get(uuid, {})
@@ -691,7 +687,7 @@ def _sync_one(
     content_current = previous.get("fingerprint") == fingerprint
 
     if not re_render and content_current and render_current:
-        print(f"unchanged  {nb.visible_name}")
+        outcome.update(name=nb.visible_name, action="unchanged")
         return False
 
     dest = plan_destination(cfg.vault_source, docs, uuid, nb.visible_name)
@@ -702,12 +698,14 @@ def _sync_one(
     render_only = content_current and ((previous_dest or dest) / "raw").is_dir()
 
     verb = "re-render" if render_only else "sync"
-    action = f"would {verb}" if dry_run else verb
 
+    outcome.update(
+        name=nb.visible_name,
+        action=("would-" + verb) if dry_run else verb,
+        destination=str(dest),
+    )
     if previous_dest and previous_dest != dest:
-        print(f"{action}   {nb.visible_name}  (renamed: {previous_dest.name} -> {dest.name})")
-    else:
-        print(f"{action}   {nb.visible_name} -> {dest}")
+        outcome["renamed_from"] = previous_dest.name
     if dry_run:
         return False
 
@@ -734,13 +732,16 @@ def _sync_one(
             dest.mkdir(parents=True, exist_ok=True)
             replace_tree(staging, dest / "raw")
 
-    attachment, render_marker = _render_attachment(renderer, dest, nb, previous.get("attachment"))
+    attachment, render_marker = _render_attachment(
+        renderer, dest, nb, previous.get("attachment"), outcome.setdefault("removed", [])
+    )
 
     note_name = f"{dest.name}.md"
     write_text_atomic(dest / note_name, render_markdown(nb, fingerprint, pdf_name=attachment))
     for removed in prune_stale_notes(dest, uuid, note_name):
-        print(f"           removed stale note {removed.name}")
+        outcome.setdefault("removed", []).append(removed.name)
 
+    outcome["attachment"] = attachment
     docs[uuid] = {
         "fingerprint": fingerprint,
         "visible_name": nb.visible_name,
@@ -759,25 +760,56 @@ def cmd_sync(cfg: Config, args: argparse.Namespace) -> int:
     docs = state["documents"]
     uuids = read_selection(ssh, cfg)
 
-    if not uuids:
-        print("No notebooks selected.")
-        return 0
-
+    results: list[dict] = []
     changed = 0
     failed = 0
+
     for uuid in uuids:
+        outcome: dict = {"uuid": uuid, "name": uuid, "action": "error"}
         try:
-            if _sync_one(ssh, cfg, uuid, docs, renderer, dry_run=args.dry_run, re_render=args.re_render):
+            if _sync_one(ssh, cfg, uuid, docs, renderer,
+                         dry_run=args.dry_run, re_render=args.re_render, outcome=outcome):
                 changed += 1
                 # Persist after each notebook so an interruption cannot lose
                 # work already written to the vault.
                 save_state(cfg.state, state)
         except (RmosError, ValueError, OSError) as exc:
-            print(f"error: {uuid}: {exc}", file=sys.stderr)
+            outcome.update(action="error", error=str(exc))
             failed += 1
+        if not outcome.get("removed"):
+            outcome.pop("removed", None)
+        results.append(outcome)
 
-    summary = f"{changed} updated, {len(uuids) - changed - failed} unchanged"
-    print(f"\n{summary}" + (f", {failed} failed" if failed else ""))
+    payload = {
+        "dry_run": bool(args.dry_run),
+        "updated": changed,
+        "unchanged": len(uuids) - changed - failed,
+        "failed": failed,
+        "notebooks": results,
+    }
+
+    def as_text(data):
+        for item in data["notebooks"]:
+            if item["action"] == "error":
+                print(f"error: {item['uuid']}: {item['error']}", file=sys.stderr)
+                continue
+            if item["action"] == "unchanged":
+                print(f"unchanged  {item['name']}")
+                continue
+            if item.get("renamed_from"):
+                print(f"{item['action']}   {item['name']}  "
+                      f"(renamed: {item['renamed_from']} -> {Path(item['destination']).name})")
+            else:
+                print(f"{item['action']}   {item['name']} -> {item['destination']}")
+            for name in item.get("removed", []):
+                print(f"           removed stale file {name}")
+        if not data["notebooks"]:
+            print("No notebooks selected.")
+            return
+        summary = f"{data['updated']} updated, {data['unchanged']} unchanged"
+        print(f"\n{summary}" + (f", {data['failed']} failed" if data["failed"] else ""))
+
+    emit(args, payload, as_text)
     return 1 if failed else 0
 
 
@@ -887,27 +919,121 @@ def cmd_tags(cfg: Config, args: argparse.Namespace) -> int:
     """List the document tags in use on the tablet."""
     ssh = make_ssh(cfg, args)
     index = read_index(ssh)
-    census = tag_census(index)
     _warn_unreadable_tags(index)
 
-    if not census:
-        print("No documents on the tablet carry a tag yet.")
-        print(f"Tag one with \"{cfg.selection_tag}\" to mark it for export.")
+    wanted = {t.casefold() for t in cfg.selection_tags}
+    payload = {
+        "configured": list(cfg.selection_tags),
+        "tags": [
+            {"name": name, "count": count, "selected": name.casefold() in wanted}
+            for name, count in tag_census(index)
+        ],
+        "documents": [
+            {"uuid": e.uuid, "name": e.visible_name, "tags": list(e.all_tags)}
+            for e in sorted(index.values(), key=lambda e: e.visible_name.casefold())
+            if e.is_document and e.all_tags
+        ],
+    }
+
+    def as_text(data):
+        if not data["tags"]:
+            print("No documents on the tablet carry a tag yet.")
+            print(f'Tag one with "{cfg.selection_tag}" to mark it for export.')
+            return
+        width = max(len(t["name"]) for t in data["tags"])
+        for tag in data["tags"]:
+            marker = "  <- selected for export" if tag["selected"] else ""
+            print(f"{tag['name']:<{width}}  {tag['count']:>3} document(s){marker}")
+        if not any(t["selected"] for t in data["tags"]):
+            print()
+            print(f'Nothing carries {", ".join(repr(t) for t in data["configured"])} yet '
+                  "(the tag(s) [selection] is configured to look for).")
+        if args.all:
+            print()
+            for doc in data["documents"]:
+                print(f"  {doc['name']}  [{', '.join(sorted(doc['tags']))}]")
+
+    emit(args, payload, as_text)
+    return 0
+
+
+def cmd_index(cfg: Config, args: argparse.Namespace) -> int:
+    """List every notebook on the tablet, with its folder, tags and state.
+
+    This is what the Omarchy plugin's picker is drawn from, so it carries
+    enough for a row: where the notebook lives, what it is tagged, whether it
+    is already selected, and by which source.
+    """
+    ssh = make_ssh(cfg, args)
+    index = read_index(ssh)
+    _warn_unreadable_tags(index)
+
+    by_file = set(read_selection_file(ssh)) if "file" in cfg.selection_sources else set()
+    by_tag = set(select_by_tags(index, cfg.selection_tags)) if "tag" in cfg.selection_sources else set()
+    tracked = load_state(cfg.state)["documents"]
+
+    def sort_key(entry):
+        return (folder_path(index, entry.uuid).casefold(), entry.visible_name.casefold())
+
+    documents = []
+    for entry in sorted(index.values(), key=sort_key):
+        if not entry.is_document:
+            continue
+        documents.append({
+            "uuid": entry.uuid,
+            "name": entry.visible_name,
+            "folder": folder_path(index, entry.uuid),
+            "tags": list(entry.all_tags),
+            "selected": entry.uuid in by_file or entry.uuid in by_tag,
+            "selected_by": sorted(
+                s for s, members in (("file", by_file), ("tag", by_tag)) if entry.uuid in members
+            ),
+            "synced": entry.uuid in tracked,
+        })
+
+    payload = {
+        "documents": documents,
+        "tags": [{"name": name, "count": count} for name, count in tag_census(index)],
+        "selection": {"sources": list(cfg.selection_sources), "tags": list(cfg.selection_tags)},
+    }
+
+    def as_text(data):
+        for doc in data["documents"]:
+            mark = "*" if doc["selected"] else " "
+            where = f"{doc['folder']}/" if doc["folder"] else ""
+            tags = f"  [{', '.join(doc['tags'])}]" if doc["tags"] else ""
+            print(f"{mark} {where}{doc['name']}{tags}")
+        print(f"\n{sum(1 for d in data['documents'] if d['selected'])} of {len(data['documents'])} selected")
+
+    emit(args, payload, as_text)
+    return 0
+
+
+def cmd_config(cfg: Config | None, args: argparse.Namespace) -> int:
+    """Read and write individual settings.
+
+    `set` never touches your config.toml: it writes config.local.toml, which
+    is machine-owned, so the comments in the file you wrote survive.
+    """
+    path = (args.config or DEFAULT_CONFIG_PATH).expanduser()
+
+    if args.action == "get":
+        emit(args, read_setting(path, args.key), lambda d: print(json.dumps(d["value"])))
         return 0
 
-    width = max(len(tag) for tag, _ in census)
-    for tag, count in census:
-        marker = "  <- selected for export" if tag.casefold() == cfg.selection_tag.casefold() else ""
-        print(f"{tag:<{width}}  {count:>3} document(s){marker}")
+    if args.action == "unset":
+        written = unset_setting(path, args.key)
+        emit(args, {"key": args.key, "unset": True, "file": str(written)},
+             lambda d: print(f"unset {d['key']} in {d['file']}"))
+        return 0
 
-    if not any(tag.casefold() == cfg.selection_tag.casefold() for tag, _ in census):
-        print()
-        print(f"Nothing carries \"{cfg.selection_tag}\" yet (the tag [selection] is configured to look for).")
-    if args.all:
-        print()
-        for entry in sorted(index.values(), key=lambda e: e.visible_name.casefold()):
-            if entry.is_document and entry.all_tags:
-                print(f"  {entry.visible_name}  [{', '.join(sorted(entry.all_tags))}]")
+    try:
+        value = json.loads(args.value)
+    except json.JSONDecodeError:
+        value = args.value  # a bare word is a string; "true", "3" and lists are JSON
+    written = write_setting(path, args.key, value)
+    emit(args, {"key": args.key, "value": value, "file": str(written)},
+         lambda d: print(f"{d['key']} = {json.dumps(d['value'])}  ({d['file']})"))
     return 0
 
 
@@ -966,22 +1092,27 @@ def cmd_init_config(cfg: Config | None, args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 
 
+# Global flags are accepted after the subcommand too, because `rmos sync --json`
+# is what anyone would type. SUPPRESS keeps the subparser copy from clobbering
+# a value given before the subcommand.
+def add_global_flags(parser: argparse.ArgumentParser, *, suppress: bool = False) -> None:
+    default = argparse.SUPPRESS if suppress else None
+    kw = {"default": default} if suppress else {}
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="log remote commands to stderr", **kw)
+    parser.add_argument("--json", action="store_true",
+                        help="emit one JSON object instead of human output", **kw)
+    parser.add_argument("--batch", action="store_true",
+                        help="never prompt; fail instead. Required for unattended runs", **kw)
+    parser.add_argument("--wait", type=int, metavar="SECONDS",
+                        default=argparse.SUPPRESS if suppress else 0,
+                        help="wait up to SECONDS for the tablet to answer before giving up")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="rmos", description=__doc__.splitlines()[0])
     p.add_argument("--config", type=Path, help=f"config file (default: {DEFAULT_CONFIG_PATH})")
-    p.add_argument("-v", "--verbose", action="store_true", help="log remote commands to stderr")
-    p.add_argument(
-        "--batch",
-        action="store_true",
-        help="never prompt; fail instead. Required for unattended runs, which have no terminal",
-    )
-    p.add_argument(
-        "--wait",
-        type=int,
-        default=0,
-        metavar="SECONDS",
-        help="wait up to SECONDS for the tablet to answer before giving up",
-    )
+    add_global_flags(p)
     sub = p.add_subparsers(dest="command", required=True)
 
     sub.add_parser("doctor", help="check the local tools, the tablet and the vault")
@@ -999,6 +1130,18 @@ def build_parser() -> argparse.ArgumentParser:
     inspect = sub.add_parser("inspect", help="report the stroke format of synced notebooks")
     inspect.add_argument("uuid", nargs="?", help="one notebook; defaults to all synced ones")
 
+    sub.add_parser("index", help="list every notebook with its folder, tags and selection state")
+
+    config = sub.add_parser("config", help="read or write a single setting")
+    config_sub = config.add_subparsers(dest="action", required=True)
+    config_get = config_sub.add_parser("get", help="print a setting's effective value")
+    config_get.add_argument("key", help="e.g. selection.tags")
+    config_set = config_sub.add_parser("set", help="write a setting to config.local.toml")
+    config_set.add_argument("key")
+    config_set.add_argument("value", help="JSON value, or a bare string")
+    config_unset = config_sub.add_parser("unset", help="remove a setting from config.local.toml")
+    config_unset.add_argument("key")
+
     tags = sub.add_parser("tags", help="list the document tags in use on the tablet")
     tags.add_argument("--all", action="store_true", help="also list which notebook carries which tag")
 
@@ -1011,8 +1154,23 @@ def build_parser() -> argparse.ArgumentParser:
     init = sub.add_parser("init-config", help="write a starter config file")
     init.add_argument("--vault", help="path to the Obsidian vault")
     init.add_argument("--force", action="store_true", help="overwrite an existing config")
+
+    for name, parser in sub.choices.items():
+        if name == "config":
+            # Its own get/set/unset own the trailing args, so the flags belong
+            # one level deeper: `rmos config get selection.tags --json`.
+            for action in config_sub.choices.values():
+                add_global_flags(action, suppress=True)
+            continue
+        add_global_flags(parser, suppress=True)
     return p
 
+
+# These run before, or instead of, loading a config file.
+NO_CONFIG_COMMANDS = {
+    "init-config": cmd_init_config,
+    "config": cmd_config,
+}
 
 COMMANDS = {
     "doctor": cmd_doctor,
@@ -1020,6 +1178,7 @@ COMMANDS = {
     "status": cmd_status,
     "sync": cmd_sync,
     "inspect": cmd_inspect,
+    "index": cmd_index,
     "tags": cmd_tags,
     "select": cmd_select,
     "unselect": cmd_unselect,
@@ -1029,11 +1188,11 @@ COMMANDS = {
 def main() -> None:
     args = build_parser().parse_args()
     try:
-        if args.command == "init-config":
-            code = cmd_init_config(None, args)
+        if args.command in NO_CONFIG_COMMANDS:
+            code = NO_CONFIG_COMMANDS[args.command](None, args)
         else:
             code = COMMANDS[args.command](load_config(args.config), args)
-    except RmosError as exc:
+    except (RmosError, ConfigError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         code = 1
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as exc:

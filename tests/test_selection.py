@@ -12,6 +12,7 @@ from rmos import cli
 from rmos.core import (
     build_index,
     document_tags,
+    folder_path,
     page_tags,
     select_by_tag,
     tag_census,
@@ -213,7 +214,7 @@ def test_the_file_source_can_be_turned_off(sources):
 def test_the_configured_tag_is_honoured(sources, monkeypatch):
     monkeypatch.setattr(cli, "read_index", lambda _ssh: index_of((UUID, "A", ["notes"]), (OTHER, "B", ["obsidian"])))
 
-    assert cli.read_selection(None, config(selection_sources=("tag",), selection_tag="notes")) == [UUID]
+    assert cli.read_selection(None, config(selection_sources=("tag",), selection_tags=("notes",))) == [UUID]
 
 
 def test_an_unknown_source_is_rejected_rather_than_ignored(sources):
@@ -374,3 +375,49 @@ def test_an_undecodable_page_tag_is_flagged():
 
 def test_a_readable_page_tag_is_not_flagged():
     assert page_tagged(UUID, "A", "sync")[UUID].tags_unreadable is False
+
+
+# --------------------------------------------------------------------------
+# Folder paths
+# --------------------------------------------------------------------------
+
+
+def folders(*entries):
+    metadata = {}
+    for uuid, name, kind, parent in entries:
+        metadata[uuid] = {"visibleName": name, "type": kind, "parent": parent}
+    return build_index(metadata, {})
+
+
+def test_a_top_level_notebook_has_no_folder():
+    index = folders((UUID, "A", "DocumentType", ""))
+    assert folder_path(index, UUID) == ""
+
+
+def test_nested_folders_read_outermost_first():
+    index = folders(
+        ("f1", "01.projects", "CollectionType", ""),
+        ("f2", "alpha", "CollectionType", "f1"),
+        (UUID, "A", "DocumentType", "f2"),
+    )
+    assert folder_path(index, UUID) == "01.projects/alpha"
+
+
+def test_a_trashed_notebook_reports_no_folder():
+    index = folders((UUID, "A", "DocumentType", "trash"))
+    assert folder_path(index, UUID) == ""
+
+
+def test_a_parent_that_does_not_exist_stops_the_walk():
+    index = folders((UUID, "A", "DocumentType", "missing-folder"))
+    assert folder_path(index, UUID) == ""
+
+
+def test_a_parent_cycle_terminates_instead_of_hanging():
+    """The tablet should never produce this, but a hang would be unrecoverable."""
+    index = folders(
+        ("f1", "one", "CollectionType", "f2"),
+        ("f2", "two", "CollectionType", "f1"),
+        (UUID, "A", "DocumentType", "f1"),
+    )
+    assert folder_path(index, UUID) in ("two/one", "one/two")

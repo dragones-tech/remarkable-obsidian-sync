@@ -260,14 +260,7 @@ def select_by_tag(index: dict[str, IndexEntry], tag: str) -> list[str]:
     moving it out of the folder the user filed it in. A tag on the document or
     on any one of its pages counts.
     """
-    wanted = tag.strip().casefold()
-    if not wanted:
-        return []
-    return sorted(
-        entry.uuid
-        for entry in index.values()
-        if entry.is_document and any(t.casefold() == wanted for t in entry.all_tags)
-    )
+    return select_by_tags(index, [tag])
 
 
 def unreadable_tag_documents(index: dict[str, IndexEntry]) -> list[IndexEntry]:
@@ -276,6 +269,38 @@ def unreadable_tag_documents(index: dict[str, IndexEntry]) -> list[IndexEntry]:
         (e for e in index.values() if e.is_document and e.tags_unreadable),
         key=lambda e: e.visible_name.casefold(),
     )
+
+
+def select_by_tags(index: dict[str, IndexEntry], tags: Iterable[str]) -> list[str]:
+    """UUIDs of live documents carrying any of `tags`."""
+    wanted = {t.strip().casefold() for t in tags if t and t.strip()}
+    if not wanted:
+        return []
+    return sorted(
+        entry.uuid
+        for entry in index.values()
+        if entry.is_document and any(t.casefold() in wanted for t in entry.all_tags)
+    )
+
+
+def folder_path(index: dict[str, IndexEntry], uuid: str, *, separator: str = "/") -> str:
+    """Where a document sits in the tablet's folder tree, as a readable path.
+
+    Returns "" for a document at the top level. Guards against a parent cycle,
+    which the tablet should never produce but which would hang us if it did.
+    """
+    parts: list[str] = []
+    seen: set[str] = set()
+    entry = index.get(uuid)
+    parent = entry.parent if entry else ""
+    while parent and parent not in ("", "trash") and parent not in seen:
+        seen.add(parent)
+        folder = index.get(parent)
+        if folder is None:
+            break
+        parts.append(folder.visible_name)
+        parent = folder.parent
+    return separator.join(reversed(parts))
 
 
 def tag_census(index: dict[str, IndexEntry]) -> list[tuple[str, int]]:

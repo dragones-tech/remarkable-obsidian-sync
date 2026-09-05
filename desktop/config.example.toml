@@ -22,7 +22,7 @@ state = "~/.local/state/rmos/state.json"
 # Both are read, and the result is the union.
 [selection]
 sources = ["file", "tag"]
-tag = "obsidian"
+tags = ["obsidian"]
 
 # Rendering is off until you have confirmed which stroke format your firmware
 # writes. Run `rmos inspect` after a sync to find out, then point `command` at
